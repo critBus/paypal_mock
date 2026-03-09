@@ -1,0 +1,18 @@
+[project]
+name = "mi-proyecto"
+version = "0.1.0"
+description = "API con FastAPI y uv"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "fastapi",
+    "uvicorn",
+	"pydantic",
+	"python-dotenv",
+    "jinja2",
+    "httpx",
+    "requests",
+    "cryptography",
+    "python-multipart"
+]
