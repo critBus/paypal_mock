@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Webhook Replay Dashboard</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+      }
+      th,
+      td {
+        border: 1px solid #ccc;
+        padding: 8px;
+        text-align: left;
+      }
+      th {
+        background-color: #f2f2f2;
+      }
+      .select-all {
+        margin-bottom: 10px;
+      }
+      button {
+        padding: 6px 12px;
+        margin-right: 8px;
+        cursor: pointer;
+      }
+      .group-header {
+        background-color: #f9f9f9;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Webhook Replay Dashboard</h1>
+
+    <div class="select-all">
+      <button onclick="toggleSelectAll()">
+        Seleccionar/Deseleccionar todos
+      </button>
+      <button onclick="sendSelected()">Enviar seleccionados</button>
+    </div>
+
+    {% for order_id, records in grouped_records.items() %} {% set group_index =
+    loop.index0 %}
+    <h3>Order ID: {{ order_id }}</h3>
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="group-select-{{ loop.index }}" /></th>
+          <th>Tipo</th>
+          <th>Status</th>
+          <th>Versión</th>
+          <th>Order ID</th>
+          <th>Acción</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rec in records %}
+        <tr style="background-color: {{ rec.color }}">
+          <td>
+            <input
+              type="checkbox"
+              class="row-checkbox"
+              data-index="{{ group_index * 1000 + loop.index0 }}"
+            />
+          </td>
+          <td>{{ rec.event_type }}</td>
+          <td>{{ rec.status or '—' }}</td>
+          <td>{{ rec.version }}</td>
+          <td>{{ rec.order_id or '—' }}</td>
+          <td>
+            <button
+              onclick="sendSingle({{ group_index * 1000 + loop.index0 }})"
+            >
+              Enviar
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endfor %}
+
+    <script>
+      const allCheckboxes = document.querySelectorAll(".row-checkbox");
+      let globalSelect = false;
+
+      function toggleSelectAll() {
+        globalSelect = !globalSelect;
+        allCheckboxes.forEach((cb) => (cb.checked = globalSelect));
+      }
+
+      function getSelectedIndices() {
+        const indices = [];
+        allCheckboxes.forEach((cb, idx) => {
+          if (cb.checked) {
+            indices.push(parseInt(cb.dataset.index));
+          }
+        });
+        return indices;
+      }
+
+      async function sendWebhooks(indices) {
+        const res = await fetch("/send-webhook", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ indices }),
+        });
+        const data = await res.json();
+        console.log("Resultados:", data);
+        alert("Operación completada. Revisa la consola.");
+      }
+
+      function sendSelected() {
+        const indices = getSelectedIndices();
+        if (indices.length === 0) {
+          alert("Ningún webhook seleccionado.");
+          return;
+        }
+        sendWebhooks(indices);
+      }
+
+      function sendSingle(index) {
+        sendWebhooks([index]);
+      }
+    </script>
+  </body>
+</html>

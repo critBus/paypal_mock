@@ -1,6 +1,6 @@
 # simulador_paypal.py
 import uuid
-import datetime
+
 import base64
 import json
 import requests
@@ -17,12 +17,14 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from app import app
 
 from paypal.paypal import *
+from tropipay.tropipay import *
 from captura_general.captura_general import *
 
 def generate_event_body(event_type, orders_id, amount, currency):
     """
     Genera el cuerpo de un evento de webhook basado en el tipo de evento
     """
+    import datetime
     base_id = str(uuid.uuid4())[:20]
     print(f"event_type {event_type}")
     
@@ -191,6 +193,7 @@ registered_webhooks = {}
 
 # Generar certificado autofirmado al inicio
 def generate_certificate():
+    import datetime
     private_key = rsa.generate_private_key(
         public_exponent=65537,
         key_size=2048,
@@ -246,6 +249,7 @@ async def register_webhook(
     event_type: str = Form("PAYMENT.SALE.COMPLETED")  # Valor por defecto
 ):
     """Registra un webhook para simulación con un tipo de evento específico"""
+    import datetime
     webhook_uuid = str(uuid.uuid4())
     registered_webhooks[webhook_uuid] = {
         "webhook_id": webhook_id,
@@ -258,6 +262,7 @@ async def register_webhook(
 @app.post("/trigger-webhook/{webhook_uuid}")
 async def trigger_webhook(webhook_uuid: str):
     """Dispara un webhook simulado a la URL registrada"""
+    import datetime
     if webhook_uuid not in registered_webhooks:
         return {"error": "Webhook no encontrado"}, 404
     

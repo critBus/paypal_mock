@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mock Tropipay - Panel de Testing</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-8">
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-3xl font-bold text-gray-800 mb-8">🧪 Mock Tropipay - Panel de Control</h1>
+        
+        <!-- Estado Actual -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">📊 Estado Actual</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div class="p-4 bg-gray-50 rounded">
+                    <p class="text-sm text-gray-500">Forzar Error</p>
+                    <p class="text-lg font-bold {{ 'text-red-600' if force_error else 'text-green-600' }}">
+                        {{ "ACTIVADO" if force_error else "DESACTIVADO" }}
+                    </p>
+                </div>
+                <div class="p-4 bg-gray-50 rounded">
+                    <p class="text-sm text-gray-500">Tipo de Error</p>
+                    <p class="text-lg font-bold text-gray-800">{{ error_type }}</p>
+                </div>
+                <div class="p-4 bg-gray-50 rounded">
+                    <p class="text-sm text-gray-500">Código HTTP</p>
+                    <p class="text-lg font-bold text-gray-800">{{ error_code }}</p>
+                </div>
+                <div class="p-4 bg-gray-50 rounded">
+                    <p class="text-sm text-gray-500">Tokens Activos</p>
+                    <p class="text-lg font-bold text-blue-600">{{ active_tokens_count }}</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- ✅ NUEVO: Uso de Errores -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">📈 Uso de Errores (Un Solo Uso)</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div class="p-4 {{ 'bg-red-50' if error_usage_paymentcards >= max_uses else 'bg-green-50' }} rounded">
+                    <p class="text-sm text-gray-500">/api/v3/paymentcards</p>
+                    <p class="text-lg font-bold {{ 'text-red-600' if error_usage_paymentcards >= max_uses else 'text-green-600' }}">
+                        {{ error_usage_paymentcards }}/{{ max_uses }} usos
+                        {{ "✅ AGOTADO" if error_usage_paymentcards >= max_uses else "⏳ DISPONIBLE" }}
+                    </p>
+                </div>
+                <div class="p-4 {{ 'bg-red-50' if error_usage_token >= max_uses else 'bg-green-50' }} rounded">
+                    <p class="text-sm text-gray-500">/api/v3/access/token</p>
+                    <p class="text-lg font-bold {{ 'text-red-600' if error_usage_token >= max_uses else 'text-green-600' }}">
+                        {{ error_usage_token }}/{{ max_uses }} usos
+                        {{ "✅ AGOTADO" if error_usage_token >= max_uses else "⏳ DISPONIBLE" }}
+                    </p>
+                </div>
+            </div>
+            <p class="mt-4 text-sm text-gray-600">
+                💡 <strong>Nota:</strong> Cada error forzado se consume después del primer uso. 
+                Las siguientes peticiones funcionarán normalmente (útil para testear re-autenticación).
+            </p>
+        </div>
+        
+        <!-- Control de Errores -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">⚠️ Control de Errores (Testing)</h2>
+            <form id="errorForm" class="space-y-4">
+                <div class="flex items-center space-x-4">
+                    <label class="flex items-center space-x-2">
+                        <input type="checkbox" id="forceError" {{ "checked" if force_error else "" }} 
+                               class="w-5 h-5 text-red-600 rounded">
+                        <span class="font-medium">Forzar Respuesta de Error (1 solo uso)</span>
+                    </label>
+                </div>
+                
+                <div class="grid grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Tipo de Error</label>
+                        <select id="errorType" class="w-full p-2 border rounded">
+                            <option value="invalid_request" {{ "selected" if error_type == "invalid_request" else "" }}>invalid_request (400)</option>
+                            <option value="invalid_client" {{ "selected" if error_type == "invalid_client" else "" }}>invalid_client (401)</option>
+                            <option value="forbidden" {{ "selected" if error_type == "forbidden" else "" }}>forbidden (403)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Código HTTP</label>
+                        <select id="errorCode" class="w-full p-2 border rounded">
+                            <option value="400" {{ "selected" if error_code == 400 else "" }}>400 - Bad Request</option>
+                            <option value="401" {{ "selected" if error_code == 401 else "" }}>401 - Unauthorized</option>
+                            <option value="403" {{ "selected" if error_code == 403 else "" }}>403 - Forbidden</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Máximo Usos</label>
+                        <select id="maxUses" class="w-full p-2 border rounded">
+                            <option value="1" {{ "selected" if max_uses == 1 else "" }}>1 vez (Recomendado)</option>
+                            <option value="2" {{ "selected" if max_uses == 2 else "" }}>2 veces</option>
+                            <option value="3" {{ "selected" if max_uses == 3 else "" }}>3 veces</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <button type="submit" class="w-full bg-red-600 text-white py-2 px-4 rounded hover:bg-red-700 transition">
+                    Actualizar Configuración
+                </button>
+            </form>
+        </div>
+        
+        <!-- Cuentas Válidas -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">✅ Cuentas Válidas (Configuradas)</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="bg-gray-50">
+                            <th class="p-3 text-left">Client ID</th>
+                            <th class="p-3 text-left">Client Secret</th>
+                            <th class="p-3 text-left">App Name</th>
+                            <th class="p-3 text-left">Scopes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for client_id, data in valid_credentials.items() %}
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-3 font-mono text-sm">{{ client_id }}</td>
+                            <td class="p-3 font-mono text-sm">{{ data.client_secret }}</td>
+                            <td class="p-3">{{ data.app_name }}</td>
+                            <td class="p-3 text-sm text-gray-600">{{ data.scopes | length }} scopes</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Acciones -->
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4">🔧 Acciones</h2>
+            <div class="flex space-x-4">
+                <button onclick="clearTokens()" class="bg-gray-600 text-white py-2 px-4 rounded hover:bg-gray-700 transition">
+                    🗑️ Limpiar Tokens Activos
+                </button>
+                <button onclick="resetAll()" class="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 transition">
+                    🔄 Resetear Todo
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        document.getElementById('errorForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = {
+                force_error: document.getElementById('forceError').checked,
+                error_type: document.getElementById('errorType').value,
+                error_code: parseInt(document.getElementById('errorCode').value),
+                max_uses: parseInt(document.getElementById('maxUses').value)
+            };
+            
+            try {
+                const response = await fetch('/admin/test-control', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                const result = await response.json();
+                alert('✅ ' + result.message + '\n\nConfiguración: ' + JSON.stringify(result));
+                location.reload();
+            } catch (error) {
+                alert('❌ Error: ' + error.message);
+            }
+        });
+        
+        async function clearTokens() {
+            if (!confirm('¿Seguro que quieres limpiar todos los tokens activos?')) return;
+            try {
+                await fetch('/admin/test-control/tokens', {method: 'DELETE'});
+                alert('✅ Tokens limpiados');
+                location.reload();
+            } catch (error) {
+                alert('❌ Error: ' + error.message);
+            }
+        }
+        
+        async function resetAll() {
+            if (!confirm('¿Resetear toda la configuración?')) return;
+            try {
+                await fetch('/admin/test-control/reset', {method: 'POST'});
+                alert('✅ Todo reseteado');
+                location.reload();
+            } catch (error) {
+                alert('❌ Error: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>
