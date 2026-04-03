@@ -117,3 +117,4 @@ docs/proposals/*
 
 .DS_Store
 uv.lock
+*.lock
