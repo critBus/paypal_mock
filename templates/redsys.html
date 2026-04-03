@@ -1,0 +1,267 @@
+<!-- ==================================================
+     Archivo: /media/rene/EXTRA DATA/Trabajo/Crinnotech/CrinnoPayments/experimentos/mock-redsys/templates/index.html
+     ================================================== -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redsys Testing API</title>
+    <!-- Tailwind CSS LOCAL (sin internet) -->
+    <!-- <link rel="stylesheet" href="/static/css/tailwind.css"> -->
+    <style>
+        .loading { opacity: 0.5; pointer-events: none; }
+        .hidden-section { display: none; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-8">
+    <div class="max-w-6xl mx-auto">
+        <h1 class="text-3xl font-bold text-center mb-8 text-blue-600">🧪 Redsys Testing API</h1>
+        
+        <!-- Sección 1: Parsear Formulario -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">📋 1. Pegar Formulario Redsys</h2>
+            <p class="text-sm text-gray-600 mb-4">
+                Copia el campo <code class="bg-gray-200 px-2 py-1 rounded">checkout_url</code> completo de tu API Django y pégalo aquí:
+            </p>
+            <form id="parseForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Formulario HTML *</label>
+                    <textarea id="formHtml" required rows="6"
+                        placeholder='&lt;form method="post" data-payment-id="..." data-payment-order-number="S00000002" action="..."&gt;...'
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 border p-2 font-mono text-sm"></textarea>
+                </div>
+                <button type="submit"
+                    class="w-full bg-purple-600 text-white px-4 py-2 rounded-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    🔍 Parsear Formulario
+                </button>
+            </form>
+            
+            <!-- Resultado del Parseo -->
+            <div id="parseResult" class="mt-4 hidden-section">
+                <h3 class="text-lg font-semibold mb-2">Datos Extraídos:</h3>
+                <pre id="parseResultContent" class="bg-gray-100 p-4 rounded overflow-auto text-sm"></pre>
+            </div>
+        </div>
+
+        <!-- Sección 2: Simular Webhook -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">🚀 2. Simular Webhook</h2>
+            <form id="webhookForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Order Number *</label>
+                    <input type="text" id="orderNumber" required
+                        placeholder="Ej: S00000002"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 border p-2">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Response Code</label>
+                    <select id="responseCode"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 border p-2">
+                        <optgroup label="✅ Éxito">
+                            <option value="0000">0000 - Transacción autorizada</option>
+                            <option value="0001">0001 - Transacción autorizada para pagos</option>
+                        </optgroup>
+                        <optgroup label="❌ Cancelado">
+                            <option value="0400">0400 - Transacción cancelada</option>
+                            <option value="9915">9915 - Pago cancelado por usuario</option>
+                        </optgroup>
+                        <optgroup label="⚠️ Error">
+                            <option value="0101">0101 - Tarjeta caducada</option>
+                            <option value="0129">0129 - CVV2 incorrecto</option>
+                            <option value="0172">0172 - Denegada, no reintentar</option>
+                            <option value="0190">0190 - Denegación del emisor</option>
+                            <option value="9041">9041 - Error en cálculo de firma</option>
+                        </optgroup>
+                    </select>
+                </div>
+                <div class="flex items-center">
+                    <input type="checkbox" id="simulateSignature" checked
+                        class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                    <label class="ml-2 block text-sm text-gray-700">Simular Signature Válida</label>
+                </div>
+                <div class="flex gap-2">
+                    <button type="submit"
+                        class="flex-1 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        🚀 Enviar Webhook
+                    </button>
+                    <button type="button" onclick="simulateQuick('success')"
+                        class="flex-1 bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700">
+                        ✅ Éxito Rápido
+                    </button>
+                    <button type="button" onclick="simulateQuick('failure')"
+                        class="flex-1 bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700">
+                        ❌ Fallo Rápido
+                    </button>
+                    <button type="button" onclick="simulateQuick('cancelled')"
+                        class="flex-1 bg-yellow-600 text-white px-4 py-2 rounded-md hover:bg-yellow-700">
+                        🚫 Cancelado
+                    </button>
+                </div>
+            </form>
+            
+            <!-- Resultado del Webhook -->
+            <div id="webhookResult" class="mt-4 hidden-section">
+                <h3 class="text-lg font-semibold mb-2">Resultado:</h3>
+                <pre id="webhookResultContent" class="bg-gray-100 p-4 rounded overflow-auto text-sm"></pre>
+            </div>
+        </div>
+
+        <!-- Sección 3: Consultar Estado -->
+        <div class="bg-white rounded-lg shadow-lg p-6">
+            <h2 class="text-xl font-semibold mb-4">🔍 3. Consultar Estado de Orden</h2>
+            <div class="flex gap-2">
+                <input type="text" id="statusOrderNumber"
+                    placeholder="Order Number"
+                    class="flex-1 rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 border p-2">
+                <button onclick="checkStatus()"
+                    class="bg-purple-600 text-white px-4 py-2 rounded-md hover:bg-purple-700">
+                    🔍 Consultar
+                </button>
+            </div>
+            <div id="statusResult" class="mt-4 hidden-section">
+                <pre id="statusContent" class="bg-gray-100 p-4 rounded overflow-auto text-sm"></pre>
+            </div>
+        </div>
+    </div>
+    <script src="/static/js/tailwind.js" > </script>
+
+    <script>
+        const API_BASE = 'http://localhost:7000';
+        var amount_data="";
+        
+        // Parsear Formulario
+        document.getElementById('parseForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await parseForm();
+        });
+        
+        async function parseForm() {
+            const formHtml = document.getElementById('formHtml').value;
+            if (!formHtml) {
+                alert('Por favor pega el formulario HTML');
+                return;
+            }
+            
+            const form = document.getElementById('parseForm');
+            form.classList.add('loading');
+            
+            try {
+                const response = await fetch(`${API_BASE}/parse-form`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ form_html: formHtml })
+                });
+                const data = await response.json();
+                amount_data=data["data"]["decoded_params"]["Ds_Merchant_Amount"]
+                console.log(`amount_data ${amount_data}`)
+                
+                document.getElementById('parseResult').classList.remove('hidden-section');
+                document.getElementById('parseResultContent').textContent = JSON.stringify(data, null, 2);
+                document.getElementById('parseResultContent').className = response.ok
+                    ? 'bg-green-100 p-4 rounded overflow-auto text-sm'
+                    : 'bg-red-100 p-4 rounded overflow-auto text-sm';
+                
+                // Auto-completar order number si se extrajo
+                if (data.data && data.data.order_number) {
+                    document.getElementById('orderNumber').value = data.data.order_number;
+                }
+            } catch (error) {
+                document.getElementById('parseResult').classList.remove('hidden-section');
+                document.getElementById('parseResultContent').textContent = JSON.stringify({ error: error.message }, null, 2);
+                document.getElementById('parseResultContent').className = 'bg-red-100 p-4 rounded overflow-auto text-sm';
+            } finally {
+                form.classList.remove('loading');
+            }
+        }
+        
+        // Enviar Webhook
+        document.getElementById('webhookForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await sendWebhook();
+        });
+        
+        async function sendWebhook() {
+            const orderNumber = document.getElementById('orderNumber').value;
+            const responseCode = document.getElementById('responseCode').value;
+            const simulateSignature = document.getElementById('simulateSignature').checked;
+            
+            if (!orderNumber) {
+                alert('Por favor ingresa un Order Number');
+                return;
+            }
+            
+            const form = document.getElementById('webhookForm');
+            form.classList.add('loading');
+            
+            try {
+                const response = await fetch(`${API_BASE}/simulate-webhook`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        order_number: orderNumber,
+                        response_code: responseCode,
+                        simulate_signature: simulateSignature,
+                        amount:amount_data+""
+                    })
+                });
+                const data = await response.json();
+                showWebhookResult(data, response.ok);
+            } catch (error) {
+                showWebhookResult({ error: error.message }, false);
+            } finally {
+                form.classList.remove('loading');
+            }
+        }
+        
+        async function simulateQuick(type) {
+            const orderNumber = document.getElementById('orderNumber').value;
+            if (!orderNumber) {
+                alert('Por favor ingresa un Order Number');
+                return;
+            }
+            
+            const endpoint = type === 'success' ? 'simulate-success' : 
+                            type === 'failure' ? 'simulate-failure' : 'simulate-cancelled';
+            
+            try {
+                const response = await fetch(`${API_BASE}/${endpoint}/${orderNumber}`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                showWebhookResult(data, response.ok);
+            } catch (error) {
+                showWebhookResult({ error: error.message }, false);
+            }
+        }
+        
+        function showWebhookResult(data, success) {
+            document.getElementById('webhookResult').classList.remove('hidden-section');
+            document.getElementById('webhookResultContent').textContent = JSON.stringify(data, null, 2);
+            document.getElementById('webhookResultContent').className = success
+                ? 'bg-green-100 p-4 rounded overflow-auto text-sm'
+                : 'bg-red-100 p-4 rounded overflow-auto text-sm';
+        }
+        
+        // Consultar Estado
+        async function checkStatus() {
+            const orderNumber = document.getElementById('statusOrderNumber').value;
+            if (!orderNumber) {
+                alert('Por favor ingresa un Order Number');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/order-status/${orderNumber}`);
+                const data = await response.json();
+                document.getElementById('statusResult').classList.remove('hidden-section');
+                document.getElementById('statusContent').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('statusResult').classList.remove('hidden-section');
+                document.getElementById('statusContent').textContent = JSON.stringify({ error: error.message }, null, 2);
+            }
+        }
+    </script>
+
+</body>
+</html>

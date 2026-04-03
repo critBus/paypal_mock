@@ -116,3 +116,4 @@ docs/proposals/*
 !docs/proposals/.gitkeep
 
 .DS_Store
+uv.lock

@@ -14,5 +14,12 @@ dependencies = [
     "httpx",
     "requests",
     "cryptography",
-    "python-multipart"
+    "python-multipart",
+    "python-jose[cryptography]>=3.3.0",
+    "pycryptodome>=3.20.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+    "pydantic-settings>=2.1.0"
 ]

@@ -16,9 +16,18 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from app import app
 
+from redsys.main import *
 from paypal.paypal import *
 from tropipay.tropipay import *
 from captura_general.captura_general import *
+
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from config import settings
+from fastapi.middleware.cors import CORSMiddleware
+
+
+
 
 def generate_event_body(event_type, orders_id, amount, currency):
     """
@@ -27,7 +36,7 @@ def generate_event_body(event_type, orders_id, amount, currency):
     import datetime
     base_id = str(uuid.uuid4())[:20]
     print(f"event_type {event_type}")
-    
+
     # Configuración común para todos los eventos
     event_base = {
         "id": f"WH-{base_id}",
@@ -71,17 +80,19 @@ def generate_event_body(event_type, orders_id, amount, currency):
         ],
         "event_version": "1.0"
     }
-    
+
     # Configuración específica por tipo de evento
     if event_type == "PAYMENT.SALE.COMPLETED":
         event_base["summary"] = f"A successful sale payment was made for $ {amount} {currency}"
         event_base["resource"]["state"] = "completed"
         event_base["resource"]["payment_mode"] = "INSTANT_TRANSFER"
         event_base["resource"]["protection_eligibility"] = "ELIGIBLE"
-        event_base["resource"]["protection_eligibility_type"] = "ITEM_NOT_RECEIVED_ELIGIBLE,UNAUTHORIZED_PAYMENT_ELIGIBLE"
+        event_base["resource"][
+            "protection_eligibility_type"] = "ITEM_NOT_RECEIVED_ELIGIBLE,UNAUTHORIZED_PAYMENT_ELIGIBLE"
         event_base["resource"]["parent_payment"] = f"PAY-{str(uuid.uuid4())[:18].upper()}"
-        event_base["resource"]["clearing_time"] = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime("%Y-%m-%dT07:00:00Z")
-    
+        event_base["resource"]["clearing_time"] = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime(
+            "%Y-%m-%dT07:00:00Z")
+
     elif event_type == "PAYMENT.SALE.DENIED":
         print("entro a denegado")
         event_base["summary"] = f"A {currency} {amount} sale payment was denied"
@@ -89,20 +100,20 @@ def generate_event_body(event_type, orders_id, amount, currency):
         event_base["resource"]["payment_mode"] = "INSTANT_TRANSFER"
         event_base["resource"]["protection_eligibility"] = "INELIGIBLE"
         event_base["resource"]["parent_payment"] = f"PAY-{str(uuid.uuid4())[:18].upper()}"
-    
+
     elif event_type == "PAYMENT.SALE.REVERSED":
         event_base["summary"] = f"A $ {amount} {currency} sale payment was reversed"
         event_base["resource"]["state"] = "completed"
         # Para eventos reversados, el monto es negativo
         event_base["resource"]["amount"]["total"] = f"-{amount}"
         # event_base["resource"]["id"] = f"77{str(uuid.uuid4())[:14].upper()}G"  # Formato similar al ejemplo
-    
+
     elif event_type == "PAYMENT.SALE.REFUNDED":
         event_base["summary"] = f"A $ {amount} {currency} sale payment was refunded"
         event_base["resource"]["state"] = "refunded"
         event_base["resource"]["parent_payment"] = f"PAY-{str(uuid.uuid4())[:18].upper()}"
         event_base["resource"]["sale_id"] = orders_id
-    
+
     # En la función generate_event_body, agrega este nuevo caso elif:
     elif event_type == "CHECKOUT.ORDER.APPROVED":
         event_base["summary"] = "An order has been approved by buyer"
@@ -184,12 +195,13 @@ def generate_event_body(event_type, orders_id, amount, currency):
                 }
             ]
         }
-        
+
     return event_base
 
 
 # Almacenamiento en memoria para los webhooks registrados
 registered_webhooks = {}
+
 
 # Generar certificado autofirmado al inicio
 def generate_certificate():
@@ -199,7 +211,7 @@ def generate_certificate():
         key_size=2048,
         backend=default_backend()
     )
-    
+
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, u"US"),
         x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u"CA"),
@@ -207,7 +219,7 @@ def generate_certificate():
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"PayPal Simulator"),
         x509.NameAttribute(NameOID.COMMON_NAME, u"localhost"),
     ])
-    
+
     cert = x509.CertificateBuilder().subject_name(
         subject
     ).issuer_name(
@@ -224,29 +236,32 @@ def generate_certificate():
         x509.SubjectAlternativeName([x509.DNSName(u"localhost")]),
         critical=False,
     ).sign(private_key, hashes.SHA256(), default_backend())
-    
+
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
     private_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.TraditionalOpenSSL,
         encryption_algorithm=serialization.NoEncryption()
     )
-    
+
     return cert_pem.decode(), private_key, str(uuid.uuid4())[:10]
 
+
 # Generar certificado y clave privada
-CERT_PEM, PRIVATE_KEY,CERT_ID = generate_certificate()
+CERT_PEM, PRIVATE_KEY, CERT_ID = generate_certificate()
+
 
 @app.get("/cert/{certi_id}", response_class=PlainTextResponse)
 async def get_certificate(certi_id: str):
     """Endpoint que simula la entrega del certificado de PayPal"""
     return CERT_PEM
 
+
 @app.post("/register-webhook")
 async def register_webhook(
-    webhook_id: str = Form(...), 
-    target_url: str = Form(...),
-    event_type: str = Form("PAYMENT.SALE.COMPLETED")  # Valor por defecto
+        webhook_id: str = Form(...),
+        target_url: str = Form(...),
+        event_type: str = Form("PAYMENT.SALE.COMPLETED")  # Valor por defecto
 ):
     """Registra un webhook para simulación con un tipo de evento específico"""
     import datetime
@@ -259,18 +274,19 @@ async def register_webhook(
     }
     return {"webhook_uuid": webhook_uuid}
 
+
 @app.post("/trigger-webhook/{webhook_uuid}")
 async def trigger_webhook(webhook_uuid: str):
     """Dispara un webhook simulado a la URL registrada"""
     import datetime
     if webhook_uuid not in registered_webhooks:
         return {"error": "Webhook no encontrado"}, 404
-    
+
     webhook_data = registered_webhooks[webhook_uuid]
     webhook_id = webhook_data["webhook_id"]
     target_url = webhook_data["target_url"]
     event_type = webhook_data["event_type"]  # Obtener el tipo de evento solicitado
-    
+
     # Generar el cuerpo del evento basado en el tipo seleccionado
     event_body = generate_event_body(
         event_type,
@@ -278,18 +294,18 @@ async def trigger_webhook(webhook_uuid: str):
         DATA_PAYPAL["amount"],
         DATA_PAYPAL["currency"]
     )
-    
+
     event_json = json.dumps(event_body).encode('utf-8')
     print(event_json)
     # Generar parámetros para la firma
     transmission_id = str(uuid.uuid4())
     timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
     crc = zlib.crc32(event_json) & 0xFFFFFFFF
-    
+
     # Crear mensaje para firmar
     message = f"{transmission_id}|{timestamp}|{webhook_id}|{crc}"
     print(f"Mensaje firmado: {message}")
-    
+
     # Firmar el mensaje
     signature = PRIVATE_KEY.sign(
         message.encode('utf-8'),
@@ -297,7 +313,7 @@ async def trigger_webhook(webhook_uuid: str):
         hashes.SHA256()
     )
     signature_base64 = base64.b64encode(signature).decode('utf-8')
-    
+
     # Headers del webhook
     headers = {
         'Content-Type': 'application/json',
@@ -307,7 +323,7 @@ async def trigger_webhook(webhook_uuid: str):
         'PayPal-Transmission-Sig': signature_base64,
         'PayPal-Auth-Algo': 'SHA256withRSA'
     }
-    
+
     # Enviar webhook
     try:
         response = requests.post(
@@ -317,7 +333,7 @@ async def trigger_webhook(webhook_uuid: str):
             timeout=5
         )
         return {
-            "status": "success" if response.status_code in [200,201] else "failed",
+            "status": "success" if response.status_code in [200, 201] else "failed",
             "status_code": response.status_code,
             "response": response.text[:200] + "..." if len(response.text) > 200 else response.text,
             "headers_sent": headers,
@@ -330,6 +346,7 @@ async def trigger_webhook(webhook_uuid: str):
             "error": str(e),
             "event_type": event_type
         }
+
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -451,7 +468,7 @@ async def home():
                 <strong>Importante:</strong> Este simulador te permite probar localmente la validación de webhooks de PayPal.
                 Necesitas tener tu aplicación corriendo en la URL objetivo con el WEBHOOK_ID correcto.
             </div>
-            
+
             <div class="note">
                 <strong>Tipos de eventos disponibles:</strong>
                 <div class="event-types">
@@ -461,7 +478,7 @@ async def home():
                     <span class="event-type refunded">PAYMENT.SALE.REFUNDED</span>
                 </div>
             </div>
-            
+
             <form id="webhookForm" class="form-group">
                 <div class="form-group">
                     <label for="webhookId">Webhook ID (igual que en tu aplicación):</label>
@@ -561,8 +578,10 @@ async def home():
     </html>
     """
 
+
 if __name__ == "__main__":
     import uvicorn
+
     print("Iniciando simulador de PayPal Webhooks...")
     print("Accede a http://localhost:8000 para configurar y disparar webhooks")
     uvicorn.run(app, host="0.0.0.0", port=8000)
