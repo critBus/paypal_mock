@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from app import app
 
+from paylands.main import *
 from bms.main import *
 from redsys.main import *
 from paypal.paypal import *
