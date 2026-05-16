@@ -9,13 +9,14 @@ Env vars:
     MOCK_TROPIPAY_AUTO_WEBHOOK=true|false  # default false
     MOCK_TROPIPAY_WEBHOOK_DELAY_SECONDS=0  # default 0
     MOCK_TROPIPAY_TOKEN_EXPIRES_IN=7200    # default 7200
-    MOCK_TROPIPAY_PUBLIC_BASE_URL=http://127.0.0.1:8000  # optional; used to build paymentUrl/shortUrl
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
+import html
 import json
 import os
 import uuid
@@ -24,7 +25,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import httpx
 from fastapi import BackgroundTasks, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app import app
@@ -68,6 +69,41 @@ def stable_signature(*parts: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def canonical_json_bytes(payload: Dict[str, Any]) -> bytes:
+    """JSON bytes used for webhook delivery and HMAC signature calculation."""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def hmac_sha256_hex(secret: str, body: bytes) -> str:
+    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
+def get_public_base_url(request: Request) -> str:
+    configured = os.getenv("MOCK_TROPIPAY_PUBLIC_BASE_URL")
+    if configured:
+        return configured.rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+def get_webhook_secret_for_client(client_id: Optional[str]) -> str:
+    """Resolve the webhook secret used to sign X-Tropipay-Signature.
+
+    For local tests you can either:
+    - set MOCK_TROPIPAY_WEBHOOK_SECRET, or
+    - set webhook_secret in VALID_CREDENTIALS for the client.
+
+    Since your test credentials are client_001 / secret_001, the default
+    webhook_secret for client_001 is also secret_001.
+    """
+    env_secret = os.getenv("MOCK_TROPIPAY_WEBHOOK_SECRET")
+    if env_secret:
+        return env_secret
+    if client_id and client_id in VALID_CREDENTIALS:
+        client_data = VALID_CREDENTIALS[client_id]
+        return str(client_data.get("webhook_secret") or client_data["client_secret"])
+    return "secret_001"
+
+
 def create_error_response(error_type: str, error_code: int, message: Optional[str] = None):
     messages = {
         "invalid_request": "Missing or invalid parameters.",
@@ -98,8 +134,9 @@ def create_error_response(error_type: str, error_code: int, message: Optional[st
 VALID_CREDENTIALS: Dict[str, Dict[str, Any]] = {
     "client_001": {
         "client_secret": "secret_001",
+        "webhook_secret": "secret_001",
         "app_name": "App Test 1",
-        "user_id": "client_001",
+        "user_id": "1f794e90-1e3f-11ed-ba16-31e0d53105ea",
         "credential_id": 140470,
         "account_id": 1024,
         "scopes": [
@@ -117,6 +154,7 @@ VALID_CREDENTIALS: Dict[str, Dict[str, Any]] = {
     },
     "client_002": {
         "client_secret": "secret_002",
+        "webhook_secret": "secret_002",
         "app_name": "App Test 2",
         "user_id": "mock-user-002",
         "credential_id": 240470,
@@ -125,6 +163,7 @@ VALID_CREDENTIALS: Dict[str, Dict[str, Any]] = {
     },
     "client_demo": {
         "client_secret": "demo_secret",
+        "webhook_secret": "demo_secret",
         "app_name": "Demo App",
         "user_id": "mock-user-demo",
         "credential_id": 340470,
@@ -157,6 +196,7 @@ class TestState:
         self.error_usage_count: Dict[str, int] = {"token": 0, "paymentcards": 0, "webhooks": 0}
         self.active_tokens: Dict[str, Dict[str, Any]] = {}
         self.paymentcards: Dict[str, Dict[str, Any]] = {}
+        self.paymentcard_meta: Dict[str, Dict[str, Any]] = {}
         self.webhook_deliveries: List[Dict[str, Any]] = []
         self.merchant_hooks: List[Dict[str, Any]] = []
         self.user_hooks: List[Dict[str, Any]] = []
@@ -169,6 +209,7 @@ class TestState:
         self.error_usage_count = {"token": 0, "paymentcards": 0, "webhooks": 0}
         self.active_tokens.clear()
         self.paymentcards.clear()
+        self.paymentcard_meta.clear()
         self.webhook_deliveries.clear()
         self.merchant_hooks.clear()
         self.user_hooks.clear()
@@ -318,6 +359,7 @@ async def get_access_token(request: TokenRequest):
         "user_id": client_data["user_id"],
         "credential_id": client_data["credential_id"],
         "account_id": client_data["account_id"],
+        "webhook_secret": client_data.get("webhook_secret") or client_data["client_secret"],
         "scopes": client_data["scopes"],
         "created_at": utc_now(),
         "expires_at": utc_now() + timedelta(seconds=expires_in),
@@ -336,23 +378,17 @@ async def get_access_token(request: TokenRequest):
 # Payment cards
 # ==================================================
 
-def get_mock_base_url(request: Request) -> str:
-    configured = os.getenv("MOCK_TROPIPAY_PUBLIC_BASE_URL")
-    if configured:
-        return configured.rstrip("/")
-    return str(request.base_url).rstrip("/")
-
-
-def build_paymentcard_response(payload: PaymentCardCreate, token_data: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+def build_paymentcard_response(payload: PaymentCardCreate, token_data: Dict[str, Any], request: Request) -> Dict[str, Any]:
     now = utc_now()
     card_id = str(uuid.uuid1())
     suffix = uuid.uuid4().hex[:8]
-    #payment_page_url = f"{base_url}/pay/{card_id}"
-    payment_page_url = f"http://127.0.0.1:7000/pay/{card_id}"
     amount = int(payload.amount)
     service_date = date_to_iso_datetime(payload.serviceDate) or f"{now.date().isoformat()}T00:00:00.000Z"
     expiration_date = date_to_iso_datetime(payload.expirationDate)
     paymentcard_type = as_int(payload.paymentcardType, 4)
+    #base_url = get_public_base_url(request)
+    #payment_url = f"{base_url}/pay/{card_id}"
+    payment_url = f"http://127.0.0.1:7000/pay/{card_id}"
 
     response = {
         "id": card_id,
@@ -368,7 +404,7 @@ def build_paymentcard_response(payload: PaymentCardCreate, token_data: Dict[str,
         "force3ds": payload.payment3DS in ("force", 1, "1"),
         "giftcard": None,
         "reasonId": payload.reasonId,
-        "shortUrl": payment_page_url,
+        "shortUrl": payment_url,
         "accountId": payload.accountId or token_data["account_id"],
         "createdAt": iso_z(now),
         "hasClient": payload.client is not None,
@@ -380,13 +416,13 @@ def build_paymentcard_response(payload: PaymentCardCreate, token_data: Dict[str,
         "updatedAt": iso_z(now + timedelta(seconds=1)),
         "urlFailed": payload.urlFailed,
         "payment3DS": 1,
-        "paymentUrl": payment_page_url,
+        "paymentUrl": payment_url,
         "urlSuccess": payload.urlSuccess,
         "description": payload.description,
         "serviceDate": service_date,
         "credentialId": token_data["credential_id"],
         "bankOrderCode": str(uuid.uuid4().int)[:12],
-        "rawUrlPayment": f"{base_url}/pay/{card_id}/process?lang={payload.lang or 'es'}",
+        "rawUrlPayment": f"{payment_url}/process?lang={payload.lang or 'es'}",
         "expirationDate": expiration_date,
         "expirationDays": payload.expirationDays or 0,
         "paymentcardType": paymentcard_type,
@@ -424,8 +460,12 @@ async def create_payment_card(
     if payload.singleUse and not payload.client:
         return create_error_response("validation_error", 400, "client es requerido cuando singleUse=true")
 
-    card = build_paymentcard_response(payload, token_data, get_mock_base_url(request))
+    card = build_paymentcard_response(payload, token_data, request)
     TEST_STATE.paymentcards[card["id"]] = card
+    TEST_STATE.paymentcard_meta[card["id"]] = {
+        "client_id": token_data.get("client_id"),
+        "webhook_secret": token_data.get("webhook_secret") or get_webhook_secret_for_client(token_data.get("client_id")),
+    }
 
     auto_webhook = os.getenv("MOCK_TROPIPAY_AUTO_WEBHOOK", "false").lower() in ("1", "true", "yes")
     if auto_webhook and card.get("urlNotification"):
@@ -455,127 +495,6 @@ async def get_payment_card(paymentcard_id: str, authorization: Optional[str] = H
     if not card:
         return create_error_response("not_found", 404, "Payment card not found")
     return card
-
-
-@app.get("/pay/{paymentcard_id}", response_class=HTMLResponse)
-async def show_mock_payment_page(paymentcard_id: str):
-    card = TEST_STATE.paymentcards.get(paymentcard_id)
-    if not card:
-        raise HTTPException(status_code=404, detail="Payment card not found")
-
-    amount = int(card.get("amount", 0)) / 100
-    currency = card.get("currency", "USD")
-    concept = card.get("concept") or card.get("description") or "Pago TropiPay Mock"
-    reference = card.get("reference") or "-"
-    notification_url = card.get("urlNotification") or "No configurada"
-
-    html = f"""
-    <!doctype html>
-    <html lang="es">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Mock TropiPay - Pagar {reference}</title>
-        <style>
-          body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#f5f7fb; margin:0; padding:32px; color:#172033; }}
-          .card {{ max-width: 560px; margin: 0 auto; background:white; border-radius:18px; box-shadow: 0 18px 45px rgba(15, 23, 42, .12); padding:28px; }}
-          .badge {{ display:inline-block; padding:6px 10px; border-radius:999px; background:#e8f2ff; color:#075985; font-size:13px; font-weight:700; }}
-          h1 {{ margin:18px 0 8px; font-size:28px; }}
-          .amount {{ font-size:42px; font-weight:800; margin:22px 0; }}
-          .muted {{ color:#64748b; line-height:1.5; }}
-          .row {{ border-top:1px solid #e2e8f0; padding:12px 0; }}
-          .label {{ color:#64748b; font-size:13px; }}
-          .value {{ word-break:break-all; margin-top:4px; }}
-          button {{ width:100%; border:0; border-radius:14px; padding:15px 18px; background:#16a34a; color:white; font-size:18px; font-weight:800; cursor:pointer; margin-top:20px; }}
-          button:hover {{ background:#15803d; }}
-          .danger button {{ background:#dc2626; margin-top:10px; }}
-          .danger button:hover {{ background:#b91c1c; }}
-        </style>
-      </head>
-      <body>
-        <main class="card">
-          <span class="badge">TropiPay Mock</span>
-          <h1>Confirmar pago</h1>
-          <p class="muted">Esta página simula el checkout de TropiPay. Al presionar pagar, el mock enviará el webhook al <code>urlNotification</code> recibido en <code>POST /api/v3/paymentcards</code>.</p>
-          <div class="amount">{amount:,.2f} {currency}</div>
-          <div class="row"><div class="label">Concepto</div><div class="value">{concept}</div></div>
-          <div class="row"><div class="label">Referencia</div><div class="value">{reference}</div></div>
-          <div class="row"><div class="label">Webhook destino</div><div class="value">{notification_url}</div></div>
-          <form method="post" action="/pay/{paymentcard_id}/pay">
-            <button type="submit">Pagar y enviar webhook OK</button>
-          </form>
-          <form class="danger" method="post" action="/pay/{paymentcard_id}/fail">
-            <button type="submit">Simular pago fallido</button>
-          </form>
-        </main>
-      </body>
-    </html>
-    """
-    return HTMLResponse(content=html)
-
-
-@app.get("/pay/{paymentcard_id}/process", response_class=HTMLResponse)
-async def show_mock_payment_process(paymentcard_id: str):
-    return await show_mock_payment_page(paymentcard_id)
-
-
-async def complete_mock_payment(paymentcard_id: str, status: Literal["OK", "FAILED"], state: int) -> HTMLResponse:
-    card = TEST_STATE.paymentcards.get(paymentcard_id)
-    if not card:
-        raise HTTPException(status_code=404, detail="Payment card not found")
-
-    target_url = card.get("urlNotification")
-    if not target_url:
-        return HTMLResponse(
-            content="<h1>No hay urlNotification configurada</h1><p>No se pudo enviar el webhook porque el paymentcard no tiene urlNotification.</p>",
-            status_code=400,
-        )
-
-    card["state"] = 2 if status == "OK" else 4
-    card["updatedAt"] = iso_z()
-    delivery = await send_tropipay_webhook(card, target_url, status=status, state=state)
-
-    title = "Pago simulado enviado" if delivery["success"] else "Pago simulado, pero falló el webhook"
-    color = "#16a34a" if delivery["success"] else "#dc2626"
-    html = f"""
-    <!doctype html>
-    <html lang="es">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>{title}</title>
-        <style>
-          body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#f5f7fb; margin:0; padding:32px; color:#172033; }}
-          .card {{ max-width: 680px; margin: 0 auto; background:white; border-radius:18px; box-shadow: 0 18px 45px rgba(15, 23, 42, .12); padding:28px; }}
-          h1 {{ color:{color}; }}
-          pre {{ white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#e2e8f0; padding:16px; border-radius:12px; overflow:auto; }}
-          a {{ color:#2563eb; }}
-        </style>
-      </head>
-      <body>
-        <main class="card">
-          <h1>{title}</h1>
-          <p><strong>PaymentCard:</strong> {paymentcard_id}</p>
-          <p><strong>Webhook destino:</strong> {target_url}</p>
-          <p><strong>Status HTTP del webhook:</strong> {delivery.get("status_code")}</p>
-          <p><strong>Respuesta:</strong></p>
-          <pre>{delivery.get("response")}</pre>
-          <p><a href="/pay/{paymentcard_id}">Volver al checkout mock</a></p>
-        </main>
-      </body>
-    </html>
-    """
-    return HTMLResponse(content=html, status_code=200 if delivery["success"] else 502)
-
-
-@app.post("/pay/{paymentcard_id}/pay", response_class=HTMLResponse)
-async def pay_mock_payment(paymentcard_id: str):
-    return await complete_mock_payment(paymentcard_id, status="OK", state=5)
-
-
-@app.post("/pay/{paymentcard_id}/fail", response_class=HTMLResponse)
-async def fail_mock_payment(paymentcard_id: str):
-    return await complete_mock_payment(paymentcard_id, status="FAILED", state=4)
 
 
 # ==================================================
@@ -671,7 +590,17 @@ def build_payment_webhook(card: Dict[str, Any], status: str = "OK", state: int =
     now = iso_z()
     transaction_id = int(str(uuid.uuid4().int)[:7])
     paid_amount = max(100, int(card["amount"] * 0.891))
-    signature = stable_signature(card["id"], card.get("reference"), paid_amount, state)
+    originalCurrencyAmount=str(card["amount"])
+    meta = TEST_STATE.paymentcard_meta.get(card["id"], {})
+    bankOrderCode= f"TX{uuid.uuid4().int}"[:18]
+    signature=get_signature(
+    bankOrderCode=bankOrderCode,
+    client_id=meta.get("client_id"),
+    client_secret=meta.get("webhook_secret"),
+    originalCurrencyAmount=originalCurrencyAmount,
+    )
+
+    # signature = stable_signature(card["id"], card.get("reference"), paid_amount, state)
     data = {
         "id": int(str(uuid.uuid4().int)[:6]),
         "ip": "216.147.125.230",
@@ -713,7 +642,7 @@ def build_payment_webhook(card: Dict[str, Any], status: str = "OK", state: int =
         "providerFee": None,
         "signaturev2": stable_signature(signature, "v2"),
         "signaturev3": stable_signature(signature, "v3"),
-        "bankOrderCode": f"TX{uuid.uuid4().int}"[:18],
+        "bankOrderCode":bankOrderCode,
         "paymentcardId": card["id"],
         "transactionId": transaction_id,
         "conversionRate": 1.12,
@@ -723,10 +652,34 @@ def build_payment_webhook(card: Dict[str, Any], status: str = "OK", state: int =
         "depositaccountId": None,
         "destinationAmount": str(int(paid_amount * 0.99)),
         "destinationCurrency": card.get("destinationCurrency", "EUR"),
-        "originalCurrencyAmount": str(card["amount"]),
+        "originalCurrencyAmount": originalCurrencyAmount,
     }
-    return {"data": data, "status": status}
+    payload = {"data": data, "status": status}
+    include_event = os.getenv("MOCK_TROPIPAY_WEBHOOK_INCLUDE_EVENT", "true").lower() in ("1", "true", "yes")
+    if include_event:
+        payload = {
+            "event": "payment.completed" if status == "OK" else "payment.failed",
+            "data": data,
+            "status": status,
+            "timestamp": now,
+        }
+    return payload
 
+from hashlib import sha256 as encode_sha256
+def get_signature(bankOrderCode,client_id,client_secret,originalCurrencyAmount):
+    
+    print(f"0!!!! bankOrderCode {bankOrderCode}")
+    print(f"0!!!! client_id {client_id}")
+    print(f"0!!!! client_secret {client_secret}")
+    print(f"0!!!! originalCurrencyAmount {originalCurrencyAmount}")
+    payload_to_sign = (
+        f"{bankOrderCode}{client_id}"
+        f"{client_secret}{originalCurrencyAmount}"
+    )
+    print(f"0!!!! payload_to_sign {payload_to_sign}")
+    system_signature = encode_sha256(payload_to_sign.encode("utf-8")).hexdigest()
+    print(f"0!!!! system_signature {system_signature}")
+    return system_signature
 
 async def send_tropipay_webhook(card: Dict[str, Any], target_url: str, status: str = "OK", state: int = 5) -> Dict[str, Any]:
     delay = float(os.getenv("MOCK_TROPIPAY_WEBHOOK_DELAY_SECONDS", "0"))
@@ -734,17 +687,175 @@ async def send_tropipay_webhook(card: Dict[str, Any], target_url: str, status: s
         await asyncio.sleep(delay)
 
     payload = build_payment_webhook(card, status=status, state=state)
-    headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mock-TropiPay/1.0"}
-    delivery = {"target_url": target_url, "payload": payload, "createdAt": iso_z(), "status_code": None, "response": None, "success": False}
+    body = canonical_json_bytes(payload)
+    meta = TEST_STATE.paymentcard_meta.get(card["id"], {})
+    webhook_secret = str(meta.get("webhook_secret") or get_webhook_secret_for_client(meta.get("client_id")))
+
+    data=payload.get("data")
+    system_signature=get_signature(
+    bankOrderCode=data.get('bankOrderCode'),
+    client_id=meta.get("client_id"),
+    client_secret=meta.get("webhook_secret"),
+    originalCurrencyAmount=data.get('originalCurrencyAmount'),
+    )
+    
+    # bankOrderCode=data.get('bankOrderCode')
+    # client_id=meta.get("client_id")
+    # client_secret=meta.get("webhook_secret")
+    # originalCurrencyAmount=data.get('originalCurrencyAmount')
+    # print(f"0!!!! bankOrderCode {bankOrderCode}")
+    # print(f"0!!!! client_id {client_id}")
+    # print(f"0!!!! client_secret {client_secret}")
+    # print(f"0!!!! originalCurrencyAmount {originalCurrencyAmount}")
+    # payload_to_sign = (
+    #     f"{bankOrderCode}{client_id}"
+    #     f"{client_secret}{originalCurrencyAmount}"
+    # )
+    # print(f"0!!!! payload_to_sign {payload_to_sign}")
+    # system_signature = encode_sha256(payload_to_sign.encode("utf-8")).hexdigest()
+    # print(f"0!!!! system_signature {system_signature}")
+    
+    # signature = hmac_sha256_hex(webhook_secret, body)
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Mock-TropiPay/1.0",
+        "X-Tropipay-Signature": system_signature,
+    }
+    payload["data"]["signature"]=system_signature
+    payload["data"]["signaturev2"]=system_signature
+    payload["data"]["signaturev3"]=system_signature
+    if payload.get("event"):
+        headers["X-Tropipay-Event"] = str(payload["event"])
+    delivery = {
+        "target_url": target_url,
+        "payload": payload,
+        "signature": system_signature,
+        "signature_header": "X-Tropipay-Signature",
+        "webhook_secret_used": webhook_secret,
+        "createdAt": iso_z(),
+        "status_code": None,
+        "response": None,
+        "success": False,
+    }
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(target_url, json=payload, headers=headers)
+            response = await client.post(target_url, content=body, headers=headers)
         delivery.update({"status_code": response.status_code, "response": response.text[:1000], "success": 200 <= response.status_code < 300})
     except Exception as exc:
         delivery.update({"response": str(exc), "success": False})
 
     TEST_STATE.webhook_deliveries.append(delivery)
     return delivery
+
+
+
+# ==================================================
+# Local payment page
+# ==================================================
+
+def render_payment_page(card: Dict[str, Any], result: Optional[str] = None) -> str:
+    amount = card.get("amount")
+    currency = html.escape(str(card.get("currency", "")))
+    concept = html.escape(str(card.get("concept", "")))
+    reference = html.escape(str(card.get("reference", "")))
+    webhook_url = html.escape(str(card.get("urlNotification") or "No configurado"))
+    paymentcard_id = html.escape(str(card["id"]))
+    status_block = ""
+    if result == "ok":
+        status_block = '<div class="notice ok">Pago simulado correctamente. El webhook fue enviado.</div>'
+    elif result == "failed":
+        status_block = '<div class="notice fail">Pago fallido simulado. El webhook de fallo fue enviado.</div>'
+
+    return f"""
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mock TropiPay - Pago</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f6f7fb; margin:0; padding:32px; }}
+    .card {{ max-width:680px; margin:0 auto; background:white; border-radius:18px; box-shadow:0 12px 40px rgba(15,23,42,.12); padding:28px; }}
+    .brand {{ font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:#64748b; font-weight:700; }}
+    h1 {{ margin:8px 0 4px; color:#0f172a; }}
+    .amount {{ font-size:42px; line-height:1; margin:26px 0; font-weight:800; color:#111827; }}
+    .meta {{ display:grid; gap:10px; margin:20px 0; }}
+    .row {{ background:#f8fafc; border-radius:12px; padding:12px 14px; color:#334155; }}
+    .row strong {{ display:block; color:#0f172a; margin-bottom:4px; }}
+    form {{ display:inline-block; margin:8px 8px 0 0; }}
+    button {{ border:0; border-radius:12px; padding:13px 18px; font-weight:700; cursor:pointer; }}
+    .pay {{ background:#16a34a; color:white; }}
+    .fail {{ background:#dc2626; color:white; }}
+    .notice {{ border-radius:12px; padding:12px 14px; margin:16px 0; font-weight:700; }}
+    .notice.ok {{ background:#dcfce7; color:#166534; }}
+    .notice.fail {{ background:#fee2e2; color:#991b1b; }}
+    code {{ overflow-wrap:anywhere; }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">Mock TropiPay checkout</div>
+    <h1>Confirmar pago</h1>
+    {status_block}
+    <div class="amount">{amount} {currency}</div>
+    <div class="meta">
+      <div class="row"><strong>Concepto</strong>{concept}</div>
+      <div class="row"><strong>Referencia</strong>{reference}</div>
+      <div class="row"><strong>PaymentCard ID</strong><code>{paymentcard_id}</code></div>
+      <div class="row"><strong>Webhook destino</strong><code>{webhook_url}</code></div>
+    </div>
+    <form method="post" action="/pay/{paymentcard_id}/pay">
+      <button class="pay" type="submit">Pagar y enviar webhook OK</button>
+    </form>
+    <form method="post" action="/pay/{paymentcard_id}/fail">
+      <button class="fail" type="submit">Simular pago fallido</button>
+    </form>
+  </main>
+</body>
+</html>
+"""
+
+
+@app.get("/pay/{paymentcard_id}", response_class=HTMLResponse)
+async def show_mock_payment_page(paymentcard_id: str, result: Optional[str] = Query(None)):
+    card = TEST_STATE.paymentcards.get(paymentcard_id)
+    if not card:
+        return HTMLResponse("<h1>Payment card not found</h1>", status_code=404)
+    return HTMLResponse(render_payment_page(card, result=result))
+
+
+@app.get("/pay/{paymentcard_id}/process", response_class=HTMLResponse)
+async def show_mock_payment_process(paymentcard_id: str, result: Optional[str] = Query(None)):
+    return await show_mock_payment_page(paymentcard_id, result=result)
+
+
+@app.post("/pay/{paymentcard_id}/pay")
+async def pay_mock_paymentcard(paymentcard_id: str, background_tasks: BackgroundTasks):
+    card = TEST_STATE.paymentcards.get(paymentcard_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Payment card not found")
+    target_url = card.get("urlNotification")
+    if not target_url:
+        raise HTTPException(status_code=400, detail="Payment card does not have urlNotification")
+    card["state"] = 2
+    card["updatedAt"] = iso_z()
+    background_tasks.add_task(send_tropipay_webhook, card, target_url, "OK", 5)
+    return RedirectResponse(url=f"/pay/{paymentcard_id}?result=ok", status_code=303)
+
+
+@app.post("/pay/{paymentcard_id}/fail")
+async def fail_mock_paymentcard(paymentcard_id: str, background_tasks: BackgroundTasks):
+    card = TEST_STATE.paymentcards.get(paymentcard_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Payment card not found")
+    target_url = card.get("urlNotification")
+    if not target_url:
+        raise HTTPException(status_code=400, detail="Payment card does not have urlNotification")
+    card["state"] = 3
+    card["updatedAt"] = iso_z()
+    background_tasks.add_task(send_tropipay_webhook, card, target_url, "FAILED", 6)
+    return RedirectResponse(url=f"/pay/{paymentcard_id}?result=failed", status_code=303)
 
 
 @app.post("/admin/tropipay/send-webhook")
@@ -801,6 +912,8 @@ async def get_test_status():
         "valid_accounts": len(VALID_CREDENTIALS),
         "paymentcards": len(TEST_STATE.paymentcards),
         "webhook_deliveries": len(TEST_STATE.webhook_deliveries),
+        "webhook_signature_header": "X-Tropipay-Signature",
+        "default_webhook_secret": get_webhook_secret_for_client("client_001"),
         "error_usage": TEST_STATE.error_usage_count,
         "max_uses": TEST_STATE.max_error_uses,
     }
