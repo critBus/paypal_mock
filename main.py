@@ -22,6 +22,7 @@ from redsys.main import *
 from paypal.paypal import *
 from tropipay.tropipay import *
 from captura_general.captura_general import *
+from square.square import *
 
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates

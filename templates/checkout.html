@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mock Square Checkout</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 20px; }
+      .card { border: 1px solid #ddd; padding: 20px; border-radius: 8px; max-width: 480px; }
+      .amount { font-size: 24px; font-weight: bold; margin: 12px 0; }
+      button { padding: 10px 16px; margin-right: 8px; cursor: pointer; }
+      .success { background:#4CAF50; color:white; border:none }
+      .fail { background:#F44336; color:white; border:none }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Checkout (Mock Square)</h2>
+      <div>Order: {{ order_id }}</div>
+      <div>Producto: {{ name }}</div>
+      <div class="amount">{{ amount }} {{ currency }}</div>
+
+      <p>Elige una acción para simular el pago:</p>
+      <button class="success" onclick="doSim('success')">Pagar (éxito)</button>
+      <button class="fail" onclick="doSim('failure')">Simular fallo</button>
+
+      <div id="result" style="margin-top:16px"></div>
+    </div>
+
+    <script>
+      async function doSim(outcome){
+        const resEl = document.getElementById('result');
+        resEl.innerText = 'Enviando...';
+        try{
+          const r = await fetch(`/mock-square/checkout/{{ order_id }}/simulate`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ outcome })
+          });
+          const data = await r.json();
+          resEl.innerText = 'Resultado: ' + JSON.stringify(data.result || data);
+        }catch(e){
+          resEl.innerText = 'Error: ' + e;
+        }
+      }
+    </script>
+  </body>
+</html>
