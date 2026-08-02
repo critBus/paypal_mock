@@ -377,6 +377,15 @@ async def get_access_token(request: TokenRequest):
 # ==================================================
 # Payment cards
 # ==================================================
+import secrets
+import string
+
+def random_query_param(length: int) -> str:
+    if length < 0:
+        raise ValueError("length debe ser mayor o igual a 0")
+
+    chars = string.ascii_letters + string.digits + "-_"
+    return "".join(secrets.choice(chars) for _ in range(length))
 
 def build_paymentcard_response(payload: PaymentCardCreate, token_data: Dict[str, Any], request: Request) -> Dict[str, Any]:
     now = utc_now()
@@ -388,7 +397,9 @@ def build_paymentcard_response(payload: PaymentCardCreate, token_data: Dict[str,
     paymentcard_type = as_int(payload.paymentcardType, 4)
     #base_url = get_public_base_url(request)
     #payment_url = f"{base_url}/pay/{card_id}"
-    payment_url = f"http://127.0.0.1:7000/pay/{card_id}"
+    extra_long_param=random_query_param(1600)
+    base_payment =  f"http://127.0.0.1:7000/pay/{card_id}"
+    payment_url =f"{base_payment}?extra_long_param={extra_long_param}"
 
     response = {
         "id": card_id,
@@ -422,7 +433,7 @@ def build_paymentcard_response(payload: PaymentCardCreate, token_data: Dict[str,
         "serviceDate": service_date,
         "credentialId": token_data["credential_id"],
         "bankOrderCode": str(uuid.uuid4().int)[:12],
-        "rawUrlPayment": f"{payment_url}/process?lang={payload.lang or 'es'}",
+        "rawUrlPayment": f"{base_payment}/process?lang={payload.lang or 'es'}",
         "expirationDate": expiration_date,
         "expirationDays": payload.expirationDays or 0,
         "paymentcardType": paymentcard_type,
