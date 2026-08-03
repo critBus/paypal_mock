@@ -13,7 +13,7 @@ from .models import (
     TransactionSaleResponse
 )
 from .services import bms_mock_service
-
+from .card_data import *  # noqa: F403
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
