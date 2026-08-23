@@ -24,6 +24,8 @@ from tropipay.tropipay import *
 from captura_general.captura_general import *
 from square.square import *
 from revolut.revolut import *
+from axxipay.axxipay import *
+from virtualpos.virtualpos import *
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from config import settings

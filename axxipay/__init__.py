@@ -1,0 +1,2 @@
+"""Mock local de Axxipay."""
+
