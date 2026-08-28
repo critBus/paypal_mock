@@ -21,7 +21,7 @@ from app import app
 
 class Amount(BaseModel):
     currency_code: str = Field(..., min_length=3, max_length=3, example="USD")
-    value: str = Field(..., pattern=r"^\d+\.\d{2}$", example="4.00")
+    value: str = Field(..., pattern=r"^\d+(?:\.\d{2})?$", example="4.00")
 
 class PurchaseUnit(BaseModel):
     reference_id: str = Field(..., min_length=1, max_length=127, example="FKS00000009")
@@ -109,6 +109,29 @@ def build_mock_response_checkout(purchase_units: PurchaseUnit):
 ]
 }
 
+
+def build_decimals_not_supported_response(purchase_unit: PurchaseUnit):
+    return {
+        "name": "UNPROCESSABLE_ENTITY",
+        "links": [
+            {
+                "rel": "information_link",
+                "href": "https://developer.paypal.com/api/rest/reference/orders/v2/errors/#DECIMALS_NOT_SUPPORTED",
+                "method": "GET",
+            }
+        ],
+        "details": [
+            {
+                "field": f"/purchase_units/@reference_id=='{purchase_unit.reference_id}'/amount/value",
+                "issue": "DECIMALS_NOT_SUPPORTED",
+                "value": purchase_unit.amount.value,
+                "description": "Currency does not support decimals. Please refer to https://developer.paypal.com/docs/integration/direct/rest/currency-codes/ for more information.",
+            }
+        ],
+        "message": "The requested action could not be performed, semantically incorrect, or failed business validation.",
+        "debug_id": "f6527799eb796",
+    }
+
 # @app.post("/v2/checkout/orders2")
 # async def create_payment_link_paypal(
 #     request: CreatePaymentPaypalLinkRequest,
@@ -152,6 +175,16 @@ async def capture_payment(request: CaptureRequest):
     - Verifica restricciones de negocio específicas
     """
     try:
+        for purchase_unit in request.purchase_units:
+            if (
+                purchase_unit.amount.currency_code == "CLP"
+                and "." in purchase_unit.amount.value
+            ):
+                return JSONResponse(
+                    status_code=422,
+                    content=build_decimals_not_supported_response(purchase_unit),
+                )
+
         # Aquí iría la lógica de integración con PayPal
         # Ejemplo de respuesta simulada:
         return build_mock_response_checkout(request.purchase_units[0])
