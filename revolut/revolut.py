@@ -14,6 +14,7 @@ import hmac
 import html
 import json
 import os
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -32,6 +33,7 @@ REVOLUT_WEBHOOK_SIGNING_SECRET = os.getenv("REVOLUT_WEBHOOK_SIGNING_SECRET", "pu
 
 # Se admiten las dos composiciones habituales de merchant_api_url + url_path.
 API_PREFIXES = ("/api", "/api/1.0")
+EXPIRE_PENDING_AFTER_PATTERN = re.compile(r"^(?:P[1-9]\d*D|PT[1-9]\d*[HM])$")
 
 orders: dict[str, dict[str, Any]] = {}
 order_ids_by_token: dict[str, str] = {}
@@ -49,6 +51,23 @@ def _require_authorization(authorization: str | None) -> None:
         print(f"REVOLUT_MOCK_SECRET_KEY {REVOLUT_MOCK_SECRET_KEY} !!!!!!!")
         print(f"authorization {authorization} !!!!!!!!!")
         raise HTTPException(status_code=401, detail="Invalid API secret key")
+
+
+def _validate_expire_pending_after(body: dict[str, Any]) -> str | None:
+    """Valida la duracion opcional aceptada por la API de ordenes de Revolut."""
+    if "expire_pending_after" not in body:
+        return None
+
+    value = body["expire_pending_after"]
+    if not isinstance(value, str) or not EXPIRE_PENDING_AFTER_PATTERN.fullmatch(value):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "expire_pending_after must be a non-empty positive ISO 8601 "
+                "duration in minutes, hours, or days"
+            ),
+        )
+    return value
 
 
 def _public_order(order: dict[str, Any]) -> dict[str, Any]:
@@ -139,6 +158,7 @@ async def create_order(request: Request, authorization: str | None = Header(None
         raise HTTPException(status_code=400, detail="amount and currency are required") from exc
     if amount < 1:
         raise HTTPException(status_code=400, detail="amount must be greater than zero")
+    expire_pending_after = _validate_expire_pending_after(body)
 
     order_id = str(uuid.uuid4())
     token = secrets.token_urlsafe(24)[:36]
@@ -163,6 +183,8 @@ async def create_order(request: Request, authorization: str | None = Header(None
         "updated_at": now,
         "payments": [],
     }
+    if expire_pending_after is not None:
+        order["_expire_pending_after"] = expire_pending_after
     orders[order_id] = order
     order_ids_by_token[token] = order_id
     return JSONResponse(status_code=201, content=_public_order(order))
