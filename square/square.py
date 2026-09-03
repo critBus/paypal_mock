@@ -26,12 +26,12 @@ from app import app
 load_dotenv()
 
 # Configuración desde variables de entorno
-ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "tu_access_token_aqui")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "adqwe")
 SQUARE_VERSION = os.getenv("SQUARE_VERSION", "2025-09-24")#"2024-06-12")  # Ejemplo de versión válida
-LOCATION_ID = os.getenv("LOCATION_ID", "la_localizacion")
+LOCATION_ID = os.getenv("LOCATION_ID", "location-id-2")
 
-SQUARE_WEBHOOK_SIGNATURE_KEY = os.getenv("SQUARE_WEBHOOK_SIGNATURE_KEY", "signature-key-3")
-SQUARE_WEBHOOK_SUBSCRIPTION_ID = os.getenv("SQUARE_WEBHOOK_SUBSCRIPTION_ID", "subcription-id-3")
+SQUARE_WEBHOOK_SIGNATURE_KEY = os.getenv("SQUARE_WEBHOOK_SIGNATURE_KEY", "signature-key-2")
+SQUARE_WEBHOOK_SUBSCRIPTION_ID = os.getenv("SQUARE_WEBHOOK_SUBSCRIPTION_ID", "subcription-id-2")
 SQUARE_WEBHOOK_NOTIFICATION_URL = os.getenv(
     "SQUARE_WEBHOOK_NOTIFICATION_URL",
     "http://localhost:8001/api/square/webhooks/notifications/",
@@ -436,7 +436,12 @@ async def create_payment_link(
         "amount": quick_pay.price_money.amount,
         "currency": quick_pay.price_money.currency,
         "name": quick_pay.name,
+        "location_id": quick_pay.location_id,
         "payment_version": 0,
+        "order_version": 1,
+        "order_state": "OPEN",
+        "deleted": False,
+        "deleted_at": None,
         "created_at": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -446,6 +451,150 @@ async def create_payment_link(
         f"({quick_pay.price_money.amount} {quick_pay.price_money.currency})"
     )
     return JSONResponse(status_code=200, content=resp)
+
+
+def validate_square_api_headers(
+    authorization: Optional[str],
+    square_version: Optional[str],
+) -> None:
+    """Valida los headers comunes usados por los endpoints API del mock."""
+    if square_version != SQUARE_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid Square-Version. Expected '{SQUARE_VERSION}', got '{square_version}'",
+        )
+
+    expected_auth = f"Bearer {ACCESS_TOKEN}"
+    if authorization != expected_auth:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing Authorization header",
+        )
+
+
+def get_payment_link_by_id(payment_link_id: str) -> Optional[Dict[str, Any]]:
+    """Busca el registro interno usando el ID de PaymentLink asignado por Square."""
+    return next(
+        (
+            info
+            for info in payment_links.values()
+            if info.get("payment_link_id") == payment_link_id
+        ),
+        None,
+    )
+
+
+@app.get("/v2/orders/{order_id}")
+async def retrieve_order(
+    order_id: str,
+    authorization: Optional[str] = Header(None),
+    square_version: Optional[str] = Header(None, alias="Square-Version"),
+):
+    """Simula Orders API -> RetrieveOrder, usado antes de expirar un link."""
+    validate_square_api_headers(authorization, square_version)
+
+    info = payment_links.get(order_id)
+    if not info:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "errors": [
+                    {
+                        "category": "INVALID_REQUEST_ERROR",
+                        "code": "NOT_FOUND",
+                        "detail": f"Order {order_id} not found",
+                    }
+                ]
+            },
+        )
+
+    money = {
+        "amount": info.get("amount", 0),
+        "currency": info.get("currency", "USD"),
+    }
+    return JSONResponse(
+        status_code=200,
+        content={
+            "order": {
+                "id": order_id,
+                "location_id": info.get("location_id", LOCATION_ID),
+                "state": info.get("order_state", "OPEN"),
+                "version": int(info.get("order_version", 1)),
+                "created_at": info.get("created_at"),
+                "updated_at": info.get("updated_at", info.get("created_at")),
+                "total_money": money,
+                "net_amounts": {
+                    "total_money": money,
+                    "tax_money": {"amount": 0, "currency": money["currency"]},
+                    "discount_money": {"amount": 0, "currency": money["currency"]},
+                    "tip_money": {"amount": 0, "currency": money["currency"]},
+                    "service_charge_money": {"amount": 0, "currency": money["currency"]},
+                },
+            }
+        },
+    )
+
+
+@app.delete("/v2/online-checkout/payment-links/{payment_link_id}")
+async def delete_payment_link(
+    payment_link_id: str,
+    authorization: Optional[str] = Header(None),
+    square_version: Optional[str] = Header(None, alias="Square-Version"),
+):
+    """Simula Checkout API -> DeletePaymentLink.
+
+    Square cancela el Order asociado y elimina/invalida el checkout link.
+    """
+    validate_square_api_headers(authorization, square_version)
+
+    info = get_payment_link_by_id(payment_link_id)
+    if not info or info.get("deleted"):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "errors": [
+                    {
+                        "category": "INVALID_REQUEST_ERROR",
+                        "code": "NOT_FOUND",
+                        "detail": f"Payment link {payment_link_id} not found",
+                    }
+                ]
+            },
+        )
+
+    if info.get("order_state") == "COMPLETED":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "errors": [
+                    {
+                        "category": "INVALID_REQUEST_ERROR",
+                        "code": "BAD_REQUEST",
+                        "detail": "The payment link belongs to a completed order.",
+                    }
+                ]
+            },
+        )
+
+    now = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    info["deleted"] = True
+    info["deleted_at"] = now
+    info["updated_at"] = now
+    info["order_state"] = "CANCELED"
+    info["order_version"] = int(info.get("order_version", 1)) + 1
+
+    print(
+        "Payment link eliminado: "
+        f"{payment_link_id} -> order {info['order_id']} (CANCELED)"
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "id": payment_link_id,
+            "cancelled_order_id": info["order_id"],
+        },
+    )
 
 
 # Carpeta donde se guardarán los registros (opcional, puedes cambiarla)
@@ -521,6 +670,22 @@ async def mock_checkout_page(request: Request, order_id: str):
     info = payment_links.get(order_id)
     if not info:
         return HTMLResponse(status_code=404, content=f"<h1>Order {order_id} no encontrado</h1>")
+    if info.get("deleted") or info.get("order_state") == "CANCELED":
+        return HTMLResponse(
+            status_code=410,
+            content=(
+                "<h1>Payment link no disponible</h1>"
+                "<p>Este link de pago fue eliminado o expiró y ya no puede utilizarse.</p>"
+            ),
+        )
+    if info.get("order_state") == "COMPLETED":
+        return HTMLResponse(
+            status_code=410,
+            content=(
+                "<h1>Payment link ya utilizado</h1>"
+                "<p>La orden asociada a este link ya fue pagada.</p>"
+            ),
+        )
 
     return TEMPLATES.TemplateResponse("checkout.html", {
         "request": request,
@@ -537,6 +702,16 @@ async def simulate_checkout(request: Request, order_id: str):
     info = payment_links.get(order_id)
     if not info:
         raise HTTPException(status_code=404, detail="order_id no encontrado")
+    if info.get("deleted") or info.get("order_state") == "CANCELED":
+        raise HTTPException(
+            status_code=410,
+            detail="El payment link fue eliminado o expiró y ya no puede pagarse.",
+        )
+    if info.get("order_state") == "COMPLETED":
+        raise HTTPException(
+            status_code=409,
+            detail="La orden asociada a este payment link ya está pagada.",
+        )
 
     if not SQUARE_WEBHOOK_SIGNATURE_KEY:
         raise HTTPException(
@@ -559,6 +734,15 @@ async def simulate_checkout(request: Request, order_id: str):
 
     status = "COMPLETED" if outcome == "success" else "FAILED"
     event_time = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+
+    # Un pago completado deja el Order en estado terminal COMPLETED.
+    # Para un intento fallido mantenemos el Order OPEN, por lo que todavía
+    # puede expirar/eliminarse posteriormente como ocurriría con un link pendiente.
+    if outcome == "success":
+        info["order_state"] = "COMPLETED"
+        info["order_version"] = int(info.get("order_version", 1)) + 1
+        info["updated_at"] = event_time
+
     payment_id = info["payment_id"]
     payment_version = int(info.get("payment_version", 0)) + 1
     info["payment_version"] = payment_version
