@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     
     # Paths
     BASE_DIR: Path = Path(__file__).parent
+    REVOLUT_MOCK_DB_PATH: Path = BASE_DIR / "data" / "revolut.sqlite3"
     STATIC_DIR: Path = BASE_DIR / "static"
     TEMPLATES_DIR: Path = BASE_DIR / "templates"
     

@@ -13,6 +13,9 @@ from .models import (
     TransactionSaleResponse
 )
 from .services import bms_mock_service
+from .payment_links import router as payment_links_router
+
+app.include_router(payment_links_router)
 from .card_data import *  # noqa: F403
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -206,7 +209,13 @@ async def root():
         "endpoints": {
             "authentication": "/api/Auth/TokenThreeDS",
             "transactions": "/api/Transactions/Sale",
-            "get_transaction": "/api/Transactions/GetTransaction"
+            "get_transaction": "/api/Transactions/GetTransaction",
+            "add_payment_link": "/api/PaymentLinks/AddPaymentLink",
+            "get_payment_link": "/api/PaymentLinks/GetPaymentLink",
+            "disable_payment_link": "/api/PaymentLinks/DisablePaymentLink",
+            "checkout": "/payments/link/{id}",
+            "simulate_payment": "/mock-bms/payment-links/{id}/simulate",
+            "simulate_failure": "/mock-bms/payment-links/{id}/failure"
         }
     }
 

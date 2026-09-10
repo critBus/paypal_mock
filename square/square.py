@@ -26,12 +26,12 @@ from app import app
 load_dotenv()
 
 # Configuración desde variables de entorno
-ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "adqwe")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "asdqwe")
 SQUARE_VERSION = os.getenv("SQUARE_VERSION", "2025-09-24")#"2024-06-12")  # Ejemplo de versión válida
-LOCATION_ID = os.getenv("LOCATION_ID", "location-id-2")
+LOCATION_ID = os.getenv("LOCATION_ID", "location-id")
 
-SQUARE_WEBHOOK_SIGNATURE_KEY = os.getenv("SQUARE_WEBHOOK_SIGNATURE_KEY", "signature-key-2")
-SQUARE_WEBHOOK_SUBSCRIPTION_ID = os.getenv("SQUARE_WEBHOOK_SUBSCRIPTION_ID", "subcription-id-2")
+SQUARE_WEBHOOK_SIGNATURE_KEY = os.getenv("SQUARE_WEBHOOK_SIGNATURE_KEY", "signature-key")
+SQUARE_WEBHOOK_SUBSCRIPTION_ID = os.getenv("SQUARE_WEBHOOK_SUBSCRIPTION_ID", "subcription-id")
 SQUARE_WEBHOOK_NOTIFICATION_URL = os.getenv(
     "SQUARE_WEBHOOK_NOTIFICATION_URL",
     "http://localhost:8001/api/square/webhooks/notifications/",

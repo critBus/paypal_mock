@@ -4,7 +4,7 @@ Importar este modulo desde ``main.py`` con::
 
     from revolut.revolut import *  # noqa: F403
 
-El estado vive en memoria y se pierde al reiniciar el servidor.
+El estado se conserva en SQLite entre reinicios del servidor.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ from fastapi import Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from app import app
+from config import settings
+from revolut.storage import RevolutStorage
 
 
 REVOLUT_MOCK_SECRET_KEY = os.getenv("REVOLUT_MOCK_SECRET_KEY","fake-secret")
@@ -35,9 +37,7 @@ REVOLUT_WEBHOOK_SIGNING_SECRET = os.getenv("REVOLUT_WEBHOOK_SIGNING_SECRET", "pu
 API_PREFIXES = ("/api", "/api/1.0")
 EXPIRE_PENDING_AFTER_PATTERN = re.compile(r"^(?:P[1-9]\d*D|PT[1-9]\d*[HM])$")
 
-orders: dict[str, dict[str, Any]] = {}
-order_ids_by_token: dict[str, str] = {}
-webhooks: dict[str, dict[str, Any]] = {}
+storage = RevolutStorage(settings.REVOLUT_MOCK_DB_PATH)
 
 
 def _utc_now() -> str:
@@ -76,17 +76,17 @@ def _public_order(order: dict[str, Any]) -> dict[str, Any]:
 
 
 def _find_order(order_id: str) -> dict[str, Any]:
-    order = orders.get(order_id)
+    order = storage.get_order(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
 
 
 def _find_order_by_token(token: str) -> dict[str, Any]:
-    order_id = order_ids_by_token.get(token)
-    if not order_id:
+    order = storage.get_order_by_token(token)
+    if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    return _find_order(order_id)
+    return order
 
 
 def _webhook_signature(payload: dict[str, Any], timestamp: str, signing_secret: str) -> str:
@@ -105,7 +105,7 @@ async def _send_order_event(order: dict[str, Any], event_type: str) -> list[dict
     }
     targets = [
         item
-        for item in webhooks.values()
+        for item in storage.list_webhooks()
         if event_type in item.get("events", []) and item.get("url")
     ]
 
@@ -185,8 +185,7 @@ async def create_order(request: Request, authorization: str | None = Header(None
     }
     if expire_pending_after is not None:
         order["_expire_pending_after"] = expire_pending_after
-    orders[order_id] = order
-    order_ids_by_token[token] = order_id
+    storage.save_order(order)
     return JSONResponse(status_code=201, content=_public_order(order))
 
 
@@ -207,6 +206,7 @@ async def capture_order(order_id: str, authorization: str | None = Header(None))
             "created_at": order["updated_at"],
         }
     )
+    storage.save_order(order)
     webhook_results = await _send_order_event(order, "ORDER_COMPLETED")
     response = _public_order(order)
     response["mock_webhook_results"] = webhook_results
@@ -217,6 +217,7 @@ async def cancel_order(order_id: str, authorization: str | None = Header(None)):
     _require_authorization(authorization)
     order = _find_order(order_id)
     order.update(state="CANCELLED", updated_at=_utc_now())
+    storage.save_order(order)
     return _public_order(order)
 
 
@@ -233,6 +234,7 @@ async def refund_order(order_id: str, request: Request, authorization: str | Non
         raise HTTPException(status_code=400, detail="Invalid refund amount") from exc
     order["refunded_amount"] = min(order["amount"], order["refunded_amount"] + amount)
     order["updated_at"] = _utc_now()
+    storage.save_order(order)
     return {
         "id": str(uuid.uuid4()),
         "state": "COMPLETED",
@@ -255,18 +257,18 @@ async def create_webhook(request: Request, authorization: str | None = Header(No
         "events": body["events"],
         "signing_secret": secrets.token_urlsafe(32),
     }
-    webhooks[webhook_id] = webhook
+    storage.save_webhook(webhook)
     return JSONResponse(status_code=201, content=webhook)
 
 
 async def list_webhooks(authorization: str | None = Header(None)):
     _require_authorization(authorization)
-    return {"webhooks": list(webhooks.values())}
+    return {"webhooks": storage.list_webhooks()}
 
 
 async def retrieve_webhook(webhook_id: str, authorization: str | None = Header(None)):
     _require_authorization(authorization)
-    webhook = webhooks.get(webhook_id)
+    webhook = storage.get_webhook(webhook_id)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
     return webhook
@@ -278,27 +280,29 @@ async def update_webhook(
     authorization: str | None = Header(None),
 ):
     _require_authorization(authorization)
-    webhook = webhooks.get(webhook_id)
+    webhook = storage.get_webhook(webhook_id)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
     body = await request.json()
     webhook.update({key: body[key] for key in ("url", "events") if key in body})
+    storage.save_webhook(webhook)
     return webhook
 
 
 async def delete_webhook(webhook_id: str, authorization: str | None = Header(None)):
     _require_authorization(authorization)
-    if webhooks.pop(webhook_id, None) is None:
+    if not storage.delete_webhook(webhook_id):
         raise HTTPException(status_code=404, detail="Webhook not found")
     return Response(status_code=204)
 
 
 async def rotate_webhook_secret(webhook_id: str, authorization: str | None = Header(None)):
     _require_authorization(authorization)
-    webhook = webhooks.get(webhook_id)
+    webhook = storage.get_webhook(webhook_id)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
     webhook["signing_secret"] = secrets.token_urlsafe(32)
+    storage.save_webhook(webhook)
     return {"signing_secret": webhook["signing_secret"]}
 
 
@@ -363,6 +367,7 @@ async def simulate_revolut_checkout(token: str, request: Request):
     order["payments"].append(
         {"id": str(uuid.uuid4()), "state": state, "amount": order["amount"], "created_at": now}
     )
+    storage.save_order(order)
     results = await _send_order_event(order, event_type)
     return {"order": _public_order(order), "webhook_results": results}
 

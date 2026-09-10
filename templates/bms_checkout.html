@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Checkout BMSPay · Mock</title>
+  <style>
+    body {font: 17px system-ui; background:#f1f5f9; color:#172033; margin:0; padding:3rem 1rem}
+    main {max-width:540px; margin:auto; background:white; padding:2rem; border-radius:18px}
+    .amount {font-size:2.5rem; font-weight:700} button,a {font:inherit}
+    button {padding:.8rem 1rem; margin:.3rem; border:0; border-radius:8px; cursor:pointer}
+    #pay {background:#2458d3; color:white} #message {min-height:2rem}
+  </style>
+</head>
+<body><main>
+  <p>Simulador de BMSPay · No se realizan cobros</p>
+  <h1>Completar pago</h1>
+  <p>{{ link.Description }}</p><p>Factura: {{ link.InvoiceNumber }}</p>
+  <p class="amount">{{ link.Amount }}</p>
+  <p id="message">{% if link.Status == 1 %}Pago completado.{% elif not link.Active %}Este enlace está desactivado.{% else %}Selecciona el resultado del intento de pago.{% endif %}</p>
+  <div id="actions" {% if link.Status == 1 or not link.Active %}hidden{% endif %}>
+    <button id="pay" data-outcome="success">Simular pago</button>
+    <button data-outcome="decline">Simular rechazo</button>
+    <button data-outcome="cancel">Cancelar y volver</button>
+  </div>
+  <a id="return" hidden>Volver a la tienda</a>
+</main>
+<script>
+const actions = document.querySelector('#actions');
+const message = document.querySelector('#message');
+const returnLink = document.querySelector('#return');
+const params = new URLSearchParams(location.search);
+let returnUrl;
+try {
+  const target = new URL(params.get('returnUrl') || params.get('returnURL'));
+  if (['https:', 'http:'].includes(target.protocol)) { returnUrl = target.href; returnLink.href = returnUrl; returnLink.hidden = false; }
+} catch (_) {}
+for (const button of actions.querySelectorAll('button')) button.addEventListener('click', async () => {
+  for (const item of actions.querySelectorAll('button')) item.disabled = true;
+  try {
+    const response = await fetch('/mock-bms/payment-links/' + {{ link.Id | tojson }} + '/simulate', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({outcome:button.dataset.outcome})
+    });
+    const data = await response.json();
+    message.textContent = data.Msg.join(' ');
+    if (data.PaymentLink && (data.PaymentLink.Status === 1 || !data.PaymentLink.Active)) actions.hidden = true;
+    if (data.ResponseCode === 200 && returnUrl) location.assign(returnUrl);
+  } catch (_) {message.textContent = 'No se pudo contactar con el mock. Vuelve a intentarlo.';}
+  finally {for (const item of actions.querySelectorAll('button')) item.disabled = false;}
+});
+</script>
+</body></html>
