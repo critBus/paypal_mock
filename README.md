@@ -45,3 +45,9 @@ que estaban únicamente en memoria antes de esta versión deberán crearse una
 
 Pruebas: `uv run pytest tests`. Usan bases temporales y no modifican los datos
 locales.
+
+## Plaid
+
+El simulador incorpora Hosted Link, autorización bancaria, cuentas, saldos,
+transacciones, estados bancarios, pagos europeos, Transfer y webhooks ES256.
+Configuración y ejemplos en [plaid/README.md](plaid/README.md).
