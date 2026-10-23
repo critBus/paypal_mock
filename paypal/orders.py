@@ -287,13 +287,17 @@ async def controls() -> dict:
     return {
         "defaults": get_config("paypal"),
         "scenarios": SCENARIOS["paypal"],
-        "resources": list(core.ORDERS_PAYPAL.values()),
+        "resources": [*core.ORDERS_PAYPAL.values(), *core.PAYMENT_RESOURCES.values()],
     }
 
 
 @app.post("/mock/paypal/controls")
 async def update_controls(data: ControlRequest) -> dict:
     """Apply one scenario to an existing order or to future orders."""
+    if data.resource_id and data.resource_id in core.PAYMENT_RESOURCES:
+        from paypal.history import update_link_controls
+        async with core.PAYMENT_RESOURCE_LOCK:
+            return update_link_controls(data)
     if data.resource_id:
         async with CAPTURE_LOCKS.setdefault(data.resource_id, asyncio.Lock()):
             return update_order_controls(data)

@@ -60,3 +60,7 @@ rechazos, capturas pendientes, pérdida de respuesta, errores de API y webhooks
 omitidos/duplicados/incorrectos. Los escenarios y estos pagos sobreviven a reinicios.
 
 Ejemplos, controles avanzados, persistencia y guía de pruebas en [SCENARIOS.md](SCENARIOS.md).
+
+El flujo de enlaces PayPal también admite reconciliación por eventos y Transaction Search,
+retrasos independientes, entrega omitida y reenvío con el mismo ID de evento.
+Configuración y endpoints en [SCENARIOS.md](SCENARIOS.md#enlaces-paypal-reconciliación-sin-webhooks).

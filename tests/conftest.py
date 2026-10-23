@@ -25,6 +25,8 @@ def isolated_scenario_storage(tmp_path, monkeypatch):
 
     for store in [
         mock_paypal.ORDERS_PAYPAL,
+        mock_paypal.PAYMENT_RESOURCES,
+        mock_paypal.WEBHOOK_EVENTS,
         mock_virtualpos.PAYMENTS,
         *DEFAULTS.values(),
     ]:

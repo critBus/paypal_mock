@@ -78,7 +78,8 @@ DATA_PAYPAL = {
 ORDERS_PAYPAL = ResourceStore("paypal", "orders")
 
 # New Payment Links and Buttons API state.
-PAYMENT_RESOURCES: dict[str, dict[str, Any]] = {}
+PAYMENT_RESOURCES = ResourceStore("paypal", "payment_resources")
+WEBHOOK_EVENTS = ResourceStore("paypal", "webhook_events")
 
 # Useful when debugging local delivery.
 WEBHOOK_DELIVERIES: list[dict[str, Any]] = []
@@ -173,8 +174,9 @@ def _build_signed_webhook(
     resource_type: str,
     summary: str,
     resource: dict[str, Any],
+    event: dict[str, Any] | None = None,
 ) -> tuple[bytes, dict[str, str], dict[str, Any]]:
-    event = {
+    event = event or {
         "id": f"WH-{uuid.uuid4().hex.upper()}",
         "event_version": "1.0",
         "create_time": paypal_datetime(),
@@ -220,6 +222,7 @@ def _build_signed_webhook(
         "User-Agent": "PayPal/LOCAL-MOCK-1.0",
     }
 
+    WEBHOOK_EVENTS[event["id"]] = {"event": event}
     return body, headers, event
 
 
@@ -230,9 +233,10 @@ async def _deliver_webhook(
     summary: str,
     resource: dict[str, Any],
     mode: str = "normal",
+    prepared: tuple | None = None,
 ) -> None:
     target_url = _webhook_target_url()
-    body, headers, event = _build_signed_webhook(
+    body, headers, event = prepared or _build_signed_webhook(
         event_type=event_type,
         resource_type=resource_type,
         summary=summary,
@@ -269,6 +273,7 @@ async def _deliver_webhook_after_delay(
     resource: dict[str, Any],
     delay: float | None = None,
     mode: str = "normal",
+    prepared: tuple | None = None,
 ) -> None:
     await asyncio.sleep(PAYPAL_MOCK_WEBHOOK_DELAY_SECONDS if delay is None else delay)
 
@@ -278,6 +283,7 @@ async def _deliver_webhook_after_delay(
         summary=summary,
         resource=resource,
         mode=mode,
+        prepared=prepared,
     )
 
 
@@ -290,6 +296,20 @@ def schedule_webhook(
     delay: float | None = None,
     mode: str = "normal",
 ) -> None:
+    if event_type.startswith("CHECKOUT.PAYMENT-RESOURCE."):
+        identifier = resource.get("payment_resource_id") or resource.get("id")
+        saved = PAYMENT_RESOURCES.get(identifier)
+        if saved:
+            config = saved.get("mock", {})
+            mode = config.get("webhook_mode", mode)
+            delay = max(
+                PAYPAL_MOCK_WEBHOOK_DELAY_SECONDS if delay is None else delay,
+                config.get("webhook_delay_seconds", 0),
+            )
+    # Commit the event before attempting delivery: a missing webhook must remain queryable.
+    prepared = _build_signed_webhook(
+        event_type=event_type, resource_type=resource_type, summary=summary, resource=resource
+    )
     asyncio.create_task(
         _deliver_webhook_after_delay(
             event_type=event_type,
@@ -298,6 +318,7 @@ def schedule_webhook(
             resource=resource,
             delay=delay,
             mode=mode,
+            prepared=prepared,
         )
     )
 
@@ -814,7 +835,7 @@ def _payment_completed_webhook_resource(
         ],
         "payer": {
             "payer_id": "MOCKPAYER",
-            "email_address": "mock-buyer@personal.example.com",
+            "email_address": resource.get("mock", {}).get("payer_email", "mock-buyer@personal.example.com"),
             "name": {
                 "given_name": "John",
                 "surname": "Doe",
@@ -828,6 +849,11 @@ def _payment_completed_webhook_resource(
 async def create_payment_resource(
     request_data: PaymentResourceCreateRequest,
 ):
+    from paypal.orders import global_fault
+    from mock_controls import resource_config
+
+    if response := await global_fault("create"):
+        return response
     payment_resource_id = generate_payment_resource_id()
     now = paypal_datetime()
 
@@ -859,6 +885,7 @@ async def create_payment_resource(
         "transaction_id": "",
         "transaction_time": "",
         "deleted_webhook_sent": False,
+        "mock": resource_config("paypal"),
     }
 
     PAYMENT_RESOURCES[payment_resource_id] = resource
@@ -887,6 +914,9 @@ async def get_payment_resource(payment_resource_id: str):
             detail="Payment Resource not found",
         )
 
+    from paypal.history import resource_fault
+    if response := await resource_fault(resource, "get"):
+        return response
     return _payment_resource_api_response(resource)
 
 
@@ -900,6 +930,10 @@ async def delete_payment_resource(payment_resource_id: str):
             detail="Payment Resource not found",
         )
 
+    from paypal.history import resource_fault
+    if response := await resource_fault(resource, "delete"):
+        return response
+
     # Idempotent local behavior. CrinnoPayments already treats 404 as success,
     # but returning 204 repeatedly is friendlier during local tests.
     if resource["status"] == "DELETED":
@@ -910,6 +944,7 @@ async def delete_payment_resource(payment_resource_id: str):
 
     if not resource["deleted_webhook_sent"]:
         resource["deleted_webhook_sent"] = True
+        PAYMENT_RESOURCES[payment_resource_id] = resource
 
         schedule_webhook(
             event_type="CHECKOUT.PAYMENT-RESOURCE.DELETED",
@@ -1065,6 +1100,7 @@ async def complete_payment_resource(
         resource["transaction_time"] = paypal_datetime()
         resource["update_time"] = resource["transaction_time"]
 
+        PAYMENT_RESOURCES[payment_resource_id] = resource
         webhook_resource = _payment_completed_webhook_resource(resource)
 
         schedule_webhook(
@@ -1130,7 +1166,8 @@ async def paypal_mock_state():
             f"{PAYPAL_MOCK_PUBLIC_BASE_URL}/v1/notifications/certs/{_CERTIFICATE_ID}"
         ),
         "legacy_orders": dict(ORDERS_PAYPAL),
-        "payment_resources": PAYMENT_RESOURCES,
+        "payment_resources": dict(PAYMENT_RESOURCES),
+        "webhook_events": list(WEBHOOK_EVENTS.values()),
         "webhook_deliveries": WEBHOOK_DELIVERIES[-50:],
     }
 
@@ -1291,3 +1328,5 @@ def _not_available_page(
 
 # Register scenario controls after the shared signing/checkout helpers are defined.
 from paypal import orders as _orders  # noqa: E402, F401
+
+from paypal import history as _history  # noqa: E402, F401

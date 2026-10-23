@@ -29,6 +29,7 @@ class Fault(BaseModel):
         "wrong_id",
         "wrong_reference",
     ] = "error"
+    message: str | None = Field(default=None, max_length=1000)
     name: str = Field(default="UNPROCESSABLE_ENTITY", max_length=100)
     issue: str = Field(default="INSTRUMENT_DECLINED", max_length=100)
     http_status: int = Field(default=422, ge=400, le=599)
@@ -50,6 +51,9 @@ class ControlRequest(BaseModel):
         Literal["normal", "suppress", "duplicate", "bad_signature"] | None
     ) = None
     webhook_delay_seconds: float | None = Field(default=None, ge=0, le=20)
+    event_list_delay_seconds: float | None = Field(default=None, ge=0, le=86400)
+    transaction_search_delay_seconds: float | None = Field(default=None, ge=0, le=86400)
+    payer_email: str | None = Field(default=None, max_length=254)
     status: str | None = None
     rejection_code: str | None = Field(default=None, pattern=r"^-\d{1,4}$")
     capture_result: (
@@ -276,6 +280,9 @@ def configure(provider: str, data: ControlRequest, current: dict | None = None) 
             or data.capture_result is not None
             or data.processor_code is not None
             or data.three_ds_status is not None
+            or data.event_list_delay_seconds is not None
+            or data.transaction_search_delay_seconds is not None
+            or data.payer_email is not None
         )
     )
     if unsupported:
@@ -299,7 +306,7 @@ def configure(provider: str, data: ControlRequest, current: dict | None = None) 
         if key not in {"scenario", "status", "resource_id"}:
             config[key] = value
     actions = (
-        {"create", "get", "capture", "oauth"}
+        {"create", "get", "capture", "oauth", "delete", "events", "transactions"}
         if provider == "paypal"
         else {"create", "get", "checkout"}
     )
@@ -362,6 +369,7 @@ async def fault_response(provider: str, fault: dict | None) -> Response | None:
                 fault.get("name", "UNPROCESSABLE_ENTITY"),
                 fault.get("issue", "INSTRUMENT_DECLINED"),
                 fault.get("http_status", 422),
+                message=fault.get("message"),
             )
         return virtualpos_error(
             fault.get("issue", "E-021"), fault.get("http_status", 400)
@@ -369,7 +377,7 @@ async def fault_response(provider: str, fault: dict | None) -> Response | None:
     return None
 
 
-def paypal_error(name: str, issue: str, status: int) -> JSONResponse:
+def paypal_error(name: str, issue: str, status: int, *, message: str | None = None) -> JSONResponse:
     """Use PayPal's structured error envelope, including a diagnostic ID."""
     from uuid import uuid4
 
@@ -377,7 +385,7 @@ def paypal_error(name: str, issue: str, status: int) -> JSONResponse:
     return JSONResponse(
         {
             "name": name,
-            "message": "Mock PayPal operation could not be completed.",
+            "message": message or "Mock PayPal operation could not be completed.",
             "debug_id": debug_id,
             "details": [
                 {"issue": issue, "description": f"Forced mock scenario: {issue}"}

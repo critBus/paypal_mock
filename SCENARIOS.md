@@ -182,3 +182,73 @@ Referencias: [PayPal Orders v2](https://developer.paypal.com/api/orders/v2/),
 [Payment VirtualPOS](https://virtualpos.readme.io/reference/objeto-payment),
 [Rechazos VirtualPOS](https://virtualpos.readme.io/reference/objeto-rechazo),
 [Errores VirtualPOS](https://virtualpos.readme.io/reference/objeto-error).
+
+## Enlaces PayPal: reconciliación sin webhooks
+
+El mock también cubre el flujo Payment Links API utilizado por CrinnoPayments cuando
+se exige caducidad del enlace:
+
+- `POST /v1/checkout/payment-resources`: crea el enlace y su evento de creación.
+- `GET /v1/checkout/payment-resources/{id}`: devuelve ACTIVE hasta que se elimina;
+  ACTIVE por sí solo no confirma un pago.
+- `DELETE /v1/checkout/payment-resources/{id}`: elimina el enlace de forma idempotente.
+- `GET /v1/notifications/webhooks-events`: historial de eventos con `start_time`,
+  `end_time`, `event_type`, `transaction_id`, `page` y `page_size` (máximo 100).
+- `GET /v1/notifications/webhooks-events/{event_id}`: consulta un evento concreto.
+- `GET /v1/reporting/transactions`: historial de pagos de enlaces con `start_date`,
+  `end_date`, `fields`, `transaction_currency`, `transaction_id`, `page` y
+  `page_size` (máximo 500). Cada intervalo admite hasta 31 días.
+
+El evento `CHECKOUT.PAYMENT-RESOURCE.PAYMENT-COMPLETED` y el pago se guardan antes
+intentar entregar el webhook. Omitirlo o perder la conexión no impide consultarlos.
+Transaction Search devuelve `transaction_status=S`, código `T0006`, importe/moneda,
+ID de transacción y el UUID de la solicitud en `cart_info.item_details[].item_code`.
+Los enlaces pagados bloquean un segundo pago aun antes de que CrinnoPayments mande
+el DELETE. El historial del pago permanece disponible tras eliminar el enlace.
+Enlaces y eventos se conservan en `data/scenarios.sqlite3`, también tras reiniciar.
+
+En `/mock/scenarios`, selecciona PayPal y **Sin notificaciones** antes de crear
+un enlace; abre luego su checkout para pagarlo. El panel lista tanto órdenes v2
+como enlaces, y abre el checkout correspondiente. Pulsa `reconcile` en
+CrinnoPayments: podrá confirmar el pago mediante las APIs aunque no haya recibido
+el webhook. Los campos de retraso permiten simular que la consulta de eventos y
+Transaction Search se actualizan en momentos distintos; se miden desde el evento
+(o el pago) y se pueden cambiar por enlace o para los próximos pagos.
+
+Por ejemplo, configura antes de crear el enlace:
+
+```sh
+curl -X POST http://localhost:7000/mock/paypal/controls \
+  -H 'Content-Type: application/json' \
+  -d '{"scenario":"no_webhook","event_list_delay_seconds":60,"transaction_search_delay_seconds":180}'
+```
+
+Para probar el fallo de permisos de Transaction Search, usa los controles globales
+(**Próximos pagos**, sin `resource_id`), pues estos endpoints consultan el historial
+general del mock:
+
+```json
+{"faults":{"transactions":{"name":"NOT_AUTHORIZED","issue":"PERMISSION_DENIED","http_status":403,"times":1}}}
+```
+
+Para reproducir el intervalo todavía no disponible que CrinnoPayments distingue
+de un rechazo de pago:
+
+```json
+{"faults":{"transactions":{"name":"INVALID_REQUEST","issue":"INVALID_REQUEST","message":"Data for the given start date is not available.","http_status":404,"times":1}}}
+```
+
+`faults.events` controla la consulta de eventos, y `faults.get`/`faults.delete`
+permiten forzar fallos de consulta o eliminación de un enlace concreto. `times=1`
+consume el fallo una vez; `times=-1` lo mantiene. Los errores no fabrican pagos.
+
+Después de recuperar un pago mediante la API, cambia su escenario a **Flujo normal**
+y usa **Reenviar notificación → Pago completado**. El endpoint local
+`POST /mock/paypal/payment-resources/{id}/replay`, con `{"event":"completed"}`,
+reenvía el mismo ID remoto y la misma fecha del evento, con una firma nueva válida.
+Así se puede comprobar la deduplicación de CrinnoPayments. También admite `created`
+y `deleted`, únicamente cuando esos eventos ya han sucedido. Los reenvíos respetan
+el modo de entrega configurado; no crean un segundo pago ni otro evento remoto.
+
+Pruebas: `uv run pytest tests/test_paypal_link_recovery.py`. Todos los callbacks
+están interceptados y las bases son temporales; no notifican a servicios reales.
