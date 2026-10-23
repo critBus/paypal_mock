@@ -118,3 +118,6 @@ docs/proposals/*
 .DS_Store
 uv.lock
 *.lock
+
+# Local durable mock scenarios and payments
+data/scenarios.sqlite3*

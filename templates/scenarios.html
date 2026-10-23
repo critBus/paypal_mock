@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Escenarios de pagos · Mock API</title>
+<style>
+:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:1100px;margin:32px auto;padding:0 20px}h1{margin-bottom:6px}.muted{opacity:.75}.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}section{border:1px solid #7f8796;border-radius:12px;padding:24px;min-width:0}label{display:block;margin:16px 0 6px}select,input,textarea,button{font:inherit;border:1px solid #7f8796;border-radius:6px;padding:10px;box-sizing:border-box}select,input,textarea{width:100%}textarea,pre{font-family:ui-monospace,monospace}textarea{min-height:180px}button{cursor:pointer;margin:14px 8px 0 0}button.primary{background:#1762bd;color:white}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:650px;overflow:auto;font-size:13px}.notice{border-left:4px solid #d69316;padding:12px;margin:20px 0}.success{color:#298c4a}.error{color:#d14c4c}details{margin-top:20px}a{color:#4494ef}@media(max-width:760px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>Escenarios de pagos</h1>
+<p class="muted">Controles locales para probar errores, notificaciones y recuperación en CrinnoPayments.</p>
+<p><a href="/docs">API y esquemas</a> · <a href="/admin/test-control/status">Estado de controles de Tropipay</a></p>
+<div class="notice">Configurar «Próximos pagos» afecta solo a pagos nuevos. Cada pago conserva su propio escenario. Los datos y escenarios de PayPal/VirtualPOS se conservan al reiniciar el mock.</div>
+<div class="grid">
+<section>
+<form id="controls">
+<label for="provider">TPV</label><select id="provider"><option value="paypal">PayPal</option><option value="virtualpos">VirtualPOS</option></select>
+<label for="target">Aplicar a</label><select id="target"><option value="">Próximos pagos</option></select>
+<label for="scenario">Escenario</label><select id="scenario"></select>
+<p class="muted">Los errores se aplican en la siguiente operación correspondiente. En VirtualPOS, un rechazo seleccionado se fuerza al usar el checkout, incluso si pulsas «Pago correcto».</p>
+<label for="status">Estado del pago existente (opcional)</label><select id="status"><option value="">Conservar el estado</option></select>
+<p class="muted">Cambiar el estado aquí no envía un webhook. Usa «Reenviar notificación» para comprobar los eventos o abre el checkout.</p>
+<label for="delay">Retraso del webhook, en segundos (opcional, 0–20)</label><input id="delay" type="number" min="0" max="20" step="0.1" placeholder="Conservar configuración">
+<details><summary>Configuración avanzada: errores por operación</summary>
+<p class="muted">«times»: 1 fuerza un único fallo; -1 lo mantiene. PayPal: oauth/create/get/capture. VirtualPOS: create/get/checkout. Un delay permite simular timeout si supera el tiempo de espera del cliente.</p>
+<textarea id="advanced" aria-label="Configuración JSON adicional" spellcheck="false" placeholder='{"faults":{"get":{"kind":"error","name":"SERVICE_UNAVAILABLE","issue":"SERVICE_UNAVAILABLE","http_status":503,"times":1}}}'></textarea>
+</details>
+<button class="primary" type="submit">Aplicar escenario</button><button id="refresh" type="button">Actualizar</button>
+</form>
+<div id="feedback" role="status"></div>
+</section>
+<section>
+<h2>Estado y diagnóstico</h2>
+<p id="checkout"></p>
+<button id="replay" type="button">Reenviar notificación</button>
+<label for="event">Evento de PayPal a reenviar</label><select id="event"><option value="approval">Aprobación (también después de capturar)</option><option value="capture">Resultado de captura</option></select>
+<p class="muted">El reenvío respeta el escenario: si está configurado para omitir webhooks seguirá sin entregarlos. Selecciona «Flujo normal» para reanudar las entregas. Esta operación puede notificar al callback configurado.</p>
+<pre id="state">Cargando…</pre>
+</section>
+</div>
+<script>
+const catalog={{ catalog|tojson }};
+const $=id=>document.getElementById(id);let resources=[];let defaults={};
+const initial=new URLSearchParams(location.search);$('provider').value=initial.get('provider') in catalog?initial.get('provider'):'paypal';
+function showFeedback(message,error=false){$('feedback').className=error?'error':'success';$('feedback').textContent=message;}
+function resourceId(r){return r.id||r.uuid;}
+function selection(){return resources.find(r=>resourceId(r)===$('target').value);}
+function render(){const r=selection();$('state').textContent=JSON.stringify(r||defaults,null,2);$('checkout').replaceChildren();if(r){let a=document.createElement('a');a.href=$('provider').value==='paypal'?'/checkoutnow?token='+encodeURIComponent(r.id):'/virtualpos/checkout/'+encodeURIComponent(r.uuid);a.textContent='Abrir checkout';$('checkout').appendChild(a);}$('replay').disabled=!r;$('event').disabled=$('provider').value!=='paypal';}
+async function load(target){const provider=$('provider').value;const response=await fetch('/mock/'+provider+'/controls');if(!response.ok)throw Error('No se pudieron cargar los controles');const data=await response.json();resources=data.resources;defaults=data.defaults;const selected=target??$('target').value;$('target').replaceChildren(new Option('Próximos pagos',''));for(const r of resources){const label=[resourceId(r),r.reference_id||r.merchant_internal_code,r.status,r.amount,r.currency||'CLP'].filter(Boolean).join(' · ');$('target').add(new Option(label,resourceId(r)));}$('target').value=resources.some(r=>resourceId(r)===selected)?selected:'';$('scenario').replaceChildren();for(const [key,value] of Object.entries(catalog[provider]))$('scenario').add(new Option(value.label,key));$('scenario').value=(selection()?.mock||defaults).scenario||'normal';$('status').replaceChildren(new Option('Conservar el estado',''));for(const status of provider==='paypal'?['CREATED','PAYER_ACTION_REQUIRED','APPROVED','COMPLETED','VOIDED']:['pendiente','reintentando','rechazado','pagado','expirado','cancelado'])$('status').add(new Option(status,status));render();}
+$('provider').addEventListener('change',()=>load('').catch(e=>showFeedback(e.message,true)));
+$('target').addEventListener('change',()=>{const config=selection()?.mock||defaults;$('scenario').value=config.scenario||'normal';render();});
+$('refresh').addEventListener('click',()=>load().catch(e=>showFeedback(e.message,true)));
+$('controls').addEventListener('submit',async e=>{e.preventDefault();try{const body=$('advanced').value.trim()?JSON.parse($('advanced').value):{};body.scenario=$('scenario').value;if($('target').value)body.resource_id=$('target').value;if($('status').value)body.status=$('status').value;if($('delay').value!=='')body.webhook_delay_seconds=Number($('delay').value);const response=await fetch('/mock/'+$('provider').value+'/controls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw Error(JSON.stringify(data));showFeedback('Escenario aplicado. No se ha enviado ninguna notificación.');await load();}catch(error){showFeedback(error.message,true);}});
+$('replay').addEventListener('click',async()=>{if(!$('target').value)return;try{const provider=$('provider').value;const id=encodeURIComponent($('target').value);const path=provider==='paypal'?'/mock/paypal/orders/'+id+'/replay':'/mock/virtualpos/payments/'+id+'/replay';const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event:$('event').value})});const data=await response.json();if(!response.ok)throw Error(JSON.stringify(data));showFeedback('Reenvío solicitado. Revisa las entregas y el estado en CrinnoPayments.');await load();}catch(error){showFeedback(error.message,true);}});
+load(initial.get('resource_id')||'').catch(e=>showFeedback(e.message,true));
+</script>
+</body></html>

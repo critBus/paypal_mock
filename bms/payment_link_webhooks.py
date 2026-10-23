@@ -63,8 +63,8 @@ def find_event(link, event_id):
 
 async def deliver(storage, link_id, event_id):
     """Retry without rolling back payment or delaying the checkout HTTP response."""
-    destination = os.getenv("BMS_MOCK_WEBHOOK_URL", "http://localhost:8001/api/bms/webhooks/notifications/")
-    token = os.getenv("BMS_MOCK_WEBHOOK_TOKEN", "whtoken")
+    destination = os.getenv("BMS_MOCK_WEBHOOK_URL", "")
+    token = os.getenv("BMS_MOCK_WEBHOOK_TOKEN", "")
     link = storage.get(link_id)
     event = find_event(link, event_id) if link else None
     if not event:

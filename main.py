@@ -470,6 +470,7 @@ async def home():
     </head>
     <body>
         <div class="container">
+            <p><a href="/mock/scenarios">Configurar escenarios de PayPal y VirtualPOS</a></p>
             <h1>Simulador de Webhooks de PayPal</h1>
             <div class="note">
                 <strong>Importante:</strong> Este simulador te permite probar localmente la validación de webhooks de PayPal.

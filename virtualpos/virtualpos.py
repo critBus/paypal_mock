@@ -8,7 +8,7 @@ Implementa el recorrido usado por la integración:
 * notificar el ``uuid`` al ``callback_url``;
 * recuperar el Payment actualizado.
 
-El estado se guarda en memoria, igual que en los demás mocks del proyecto.
+El estado y los escenarios se conservan en SQLite entre reinicios.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import html
 import os
 import uuid as uuid_module
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
 
 import httpx
@@ -25,6 +26,8 @@ from fastapi import Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import app
+from mock_storage import ResourceStore
+from mock_controls import virtualpos_error
 
 
 # El proyecto carga cada proveedor con ``import *`` únicamente para registrar
@@ -32,7 +35,7 @@ from app import app
 __all__ = []
 
 
-PAYMENTS: Dict[str, Dict[str, Any]] = {}
+PAYMENTS = ResourceStore("virtualpos", "payments")
 WEBHOOK_DELIVERIES = []
 ALLOWED_PAYMENT_METHODS = {"webpay", "khipu", "fintoc", "mach", "redpay", "all"}
 
@@ -61,6 +64,18 @@ def _request_base_url(request: Request) -> str:
     return configured or str(request.base_url).rstrip("/")
 
 
+class VirtualposMockError(HTTPException):
+    """Expose documented API error envelopes rather than FastAPI's generic detail format."""
+
+    def __init__(self, code: str, status: int = 400) -> None:
+        super().__init__(status_code=status, detail=code)
+
+
+@app.exception_handler(VirtualposMockError)
+async def virtualpos_mock_error_handler(request: Request, exc: VirtualposMockError):
+    return virtualpos_error(str(exc.detail), exc.status_code)
+
+
 def _validate_headers(authorization: Optional[str], signature: Optional[str]) -> None:
     """En modo estricto exige los headers reales, sin validar el secreto JWT."""
     strict = os.getenv("MOCK_VIRTUALPOS_STRICT_AUTH", "false").lower() in {
@@ -69,29 +84,34 @@ def _validate_headers(authorization: Optional[str], signature: Optional[str]) ->
         "yes",
     }
     if strict and (not authorization or not signature):
-        raise HTTPException(
-            status_code=401,
-            detail="Authorization y Signature son obligatorios",
-        )
+        raise VirtualposMockError("E-001" if not authorization else "E-002", 401)
 
 
 async def _json_body(request: Request) -> Dict[str, Any]:
     try:
         body = await request.json()
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="El cuerpo debe ser JSON válido") from exc
+        raise VirtualposMockError("E-040") from exc
     if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="El cuerpo debe ser un objeto JSON")
+        raise VirtualposMockError("E-040")
     return body
 
 
 def _required(body: Dict[str, Any], *fields: str) -> None:
     missing = [field for field in fields if body.get(field) in (None, "")]
     if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Faltan campos requeridos: {', '.join(missing)}",
-        )
+        codes = {
+            "amount": "E-003",
+            "email": "E-004",
+            "social_id": "E-005",
+            "first_name": "E-006",
+            "last_name": "E-007",
+            "phone": "E-008",
+            "description": "E-009",
+            "return_url": "E-022",
+            "callback_url": "E-023",
+        }
+        raise VirtualposMockError(codes.get(missing[0], "E-040"))
 
 
 def _payment_response(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -111,6 +131,10 @@ def _payment_response(record: Dict[str, Any]) -> Dict[str, Any]:
         "merchant_internal_channel": record.get("merchant_internal_channel"),
         "deposits": record.get("deposits", []),
     }
+    if record.get("updated_at"):
+        order["updated_at"] = record["updated_at"]
+    if record.get("rejected_object"):
+        order["rejected_object"] = dict(record["rejected_object"])
     result = {
         "payment": {
             "client": dict(record["client"]),
@@ -126,7 +150,7 @@ def _payment_response(record: Dict[str, Any]) -> Dict[str, Any]:
 def _get_payment(payment_uuid: str) -> Dict[str, Any]:
     record = PAYMENTS.get(payment_uuid)
     if not record:
-        raise HTTPException(status_code=404, detail="Payment no encontrado")
+        raise VirtualposMockError("E-020")
     return record
 
 
@@ -173,6 +197,10 @@ async def virtualpos_create_payment(
     authorization: Optional[str] = Header(None),
     signature: Optional[str] = Header(None),
 ):
+    from virtualpos.scenarios import global_fault, initialize
+
+    if response := await global_fault("create"):
+        return response
     _validate_headers(authorization, signature)
     body = await _json_body(request)
     _required(
@@ -186,11 +214,17 @@ async def virtualpos_create_payment(
         "description",
     )
     try:
-        amount = int(body["amount"])
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="amount debe ser un entero") from exc
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="amount debe ser mayor que cero")
+        parsed_amount = Decimal(str(body["amount"]))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise VirtualposMockError("E-010") from exc
+    if (
+        not parsed_amount.is_finite()
+        or parsed_amount != parsed_amount.to_integral_value()
+    ):
+        raise VirtualposMockError("E-011")
+    amount = int(parsed_amount)
+    if not 1000 <= amount <= 2_147_483_647:
+        raise VirtualposMockError("E-011")
 
     payment_uuid = uuid_module.uuid4().hex[:16]
     record = {
@@ -219,6 +253,7 @@ async def virtualpos_create_payment(
         "payment_type_code": None,
         "deposits": [],
     }
+    initialize(record)
     PAYMENTS[payment_uuid] = record
     return JSONResponse(_payment_response(record), status_code=200)
 
@@ -232,22 +267,21 @@ async def virtualpos_create_webcheckout(
 ):
     _validate_headers(authorization, signature)
     record = _get_payment(payment_uuid)
+    from virtualpos.scenarios import operation_fault
+
+    response, fault = await operation_fault(record, "checkout")
+    if response is not None:
+        return response
     body = await _json_body(request)
     _required(body, "return_url", "callback_url")
 
     payment_method = str(body.get("payment_method") or "all").lower()
     if payment_method not in ALLOWED_PAYMENT_METHODS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"payment_method no válido: {payment_method}",
-        )
+        raise VirtualposMockError("E-024")
     return_url = _decode_url(body["return_url"])
     callback_url = _decode_url(body["callback_url"])
     if not return_url or not callback_url:
-        raise HTTPException(
-            status_code=400,
-            detail="return_url y callback_url deben ser URLs HTTP(S) codificadas en Base64",
-        )
+        raise VirtualposMockError("E-025" if not return_url else "E-026")
 
     record.update(
         {
@@ -256,10 +290,12 @@ async def virtualpos_create_webcheckout(
             "payment_method": payment_method,
         }
     )
+    PAYMENTS[payment_uuid] = record
     checkout_url = f"{_request_base_url(request)}/virtualpos/checkout/{payment_uuid}"
     # ``url`` es la respuesta principal; los alias facilitan clientes que
     # normalizan el nombre del enlace internamente.
     return {
+        "url_redirect": checkout_url,
         "url": checkout_url,
         "webcheckout_url": checkout_url,
         "payment_url": checkout_url,
@@ -274,16 +310,27 @@ async def virtualpos_get_payment(
     signature: Optional[str] = Header(None),
 ):
     _validate_headers(authorization, signature)
-    return _payment_response(_get_payment(payment_uuid))
+    from virtualpos.scenarios import operation_fault
+    from mock_controls import corrupt_payload
+
+    record = _get_payment(payment_uuid)
+    response, fault = await operation_fault(record, "get")
+    if response is not None:
+        return response
+    return corrupt_payload(_payment_response(record), fault, provider="virtualpos")
 
 
-def _checkout_html(record: Dict[str, Any], delivery: Optional[Dict[str, Any]] = None) -> str:
+def _checkout_html(
+    record: Dict[str, Any], delivery: Optional[Dict[str, Any]] = None
+) -> str:
     payment_uuid = html.escape(record["uuid"])
     client = record["client"]
     delivery_notice = ""
     if delivery is not None:
         if delivery["success"]:
-            delivery_notice = '<div class="notice ok">Webhook entregado correctamente.</div>'
+            delivery_notice = (
+                '<div class="notice ok">Webhook entregado correctamente.</div>'
+            )
         else:
             message = html.escape(str(delivery.get("response") or "No entregado"))
             delivery_notice = f'<div class="notice warn">El pago cambió de estado, pero el webhook no pudo entregarse: {message}</div>'
@@ -323,15 +370,16 @@ def _checkout_html(record: Dict[str, Any], delivery: Optional[Dict[str, Any]] = 
     <header><strong>VirtualPOS</strong> <span>· Web Checkout de prueba</span></header>
     <section>
       <h1>Confirmar pago</h1>
-      <span class="status">{html.escape(record['status'])}</span>
+      <span class="status">{html.escape(record["status"])}</span>
       {delivery_notice}
-      <div class="amount">$ {record['amount']:,} CLP</div>
+      <div class="amount">$ {record["amount"]:,} CLP</div>
       <div class="meta">
-        <div class="row"><b>Descripción</b>{html.escape(record['description'])}</div>
-        <div class="row"><b>Pagador</b>{html.escape(str(client['first_name']))} {html.escape(str(client['last_name']))}</div>
+        <div class="row"><b>Descripción</b>{html.escape(record["description"])}</div>
+        <div class="row"><b>Pagador</b>{html.escape(str(client["first_name"]))} {html.escape(str(client["last_name"]))}</div>
         <div class="row"><b>Payment UUID</b><code>{payment_uuid}</code></div>
-        <div class="row"><b>Callback</b><code>{html.escape(str(record.get('callback_url') or 'No configurado'))}</code></div>
+        <div class="row"><b>Callback</b><code>{html.escape(str(record.get("callback_url") or "No configurado"))}</code></div>
       </div>
+      <p><a href="/mock/scenarios?provider=virtualpos&resource_id={payment_uuid}">Configurar errores de este Payment</a></p>
       <div class="actions">
         <form method="post" action="/virtualpos/checkout/{payment_uuid}/success">
           <button class="success" type="submit">Pago correcto</button>
@@ -359,14 +407,22 @@ def _return_post_html(record: Dict[str, Any], delivery: Dict[str, Any]) -> str:
         return _checkout_html(record, delivery)
     action = html.escape(return_url, quote=True)
     payment_uuid = html.escape(record["uuid"], quote=True)
-    result = "correcto" if record["status"] == "pagado" else "fallido"
+    result = (
+        "correcto"
+        if record["status"] == "pagado"
+        else (
+            "pendiente"
+            if record["status"] in {"pendiente", "reintentando"}
+            else "fallido"
+        )
+    )
     return f"""
 <!doctype html>
 <html lang="es">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pago {result}</title></head>
 <body style="font-family:system-ui;text-align:center;padding:48px;background:#f4f7fb;color:#172033">
   <h1>Pago {result}</h1>
-  <p>Estado: <strong>{html.escape(record['status'])}</strong></p>
+  <p>Estado: <strong>{html.escape(record["status"])}</strong></p>
   <p>Redirigiendo al comercio mediante HTTP POST…</p>
   <form id="return-form" method="post" action="{action}">
     <input type="hidden" name="uuid" value="{payment_uuid}">
@@ -378,36 +434,10 @@ def _return_post_html(record: Dict[str, Any], delivery: Dict[str, Any]) -> str:
 """
 
 
-async def _resolve_checkout(payment_uuid: str, successful: bool) -> HTMLResponse:
-    record = _get_payment(payment_uuid)
-    record["status"] = "pagado" if successful else "rechazado"
-    if successful:
-        record.update(
-            {
-                "authorized_at": _now(),
-                "card_number": 6623,
-                "auth_code": uuid_module.uuid4().hex[:6].upper(),
-                "installment_amount": record["amount"],
-                "installment_number": 1,
-                "payment_type_code": "VN",
-            }
-        )
-    else:
-        record.update(
-            {
-                "authorized_at": None,
-                "card_number": None,
-                "auth_code": None,
-                "installment_amount": 0,
-                "installment_number": 0,
-                "payment_type_code": None,
-            }
-        )
+async def _resolve_checkout(payment_uuid: str, successful: bool):
+    from virtualpos.scenarios import resolve
 
-    # Se espera la entrega para que, cuando la página de retorno se abra, la
-    # integración ya pueda consultar el estado actualizado de forma estable.
-    delivery = await _send_webhook(record)
-    return HTMLResponse(_return_post_html(record, delivery))
+    return await resolve(payment_uuid, successful)
 
 
 @app.post("/virtualpos/checkout/{payment_uuid}/success", response_class=HTMLResponse)
@@ -435,3 +465,7 @@ async def virtualpos_admin_reset():
     PAYMENTS.clear()
     WEBHOOK_DELIVERIES.clear()
     return {"status": "ok", "message": "Estado VirtualPOS reseteado"}
+
+
+# Register scenario routes once the checkout/response helpers are available.
+from virtualpos import scenarios as _scenarios  # noqa: E402, F401

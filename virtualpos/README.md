@@ -1,7 +1,7 @@
 # Mock VirtualPOS v3
 
 Este módulo reproduce el flujo mínimo de Payments + Web Checkout descrito por
-VirtualPOS. El almacenamiento es en memoria y se reinicia con el proceso.
+VirtualPOS. Los Payments y sus escenarios se guardan en SQLite y se conservan entre reinicios.
 
 ## Endpoints
 
@@ -10,8 +10,8 @@ VirtualPOS. El almacenamiento es en memoria y se reinicia con el proceso.
 | `POST` | `/v3/payment` o `/v3/payment/` | Crear Payment en estado `pendiente` |
 | `POST` | `/v3/payment/{uuid}/webcheckout` | Obtener el enlace de pago |
 | `GET` | `/v3/payment/{uuid}` | Consultar el Payment y su estado |
-| `GET` | `/virtualpos/checkout/{uuid}` | Abrir la pantalla con pago correcto/fallido |
-| `GET` | `/admin/virtualpos/payments` | Inspeccionar Payments en memoria |
+| `GET` | `/virtualpos/checkout/{uuid}` | Abrir la pantalla de pago y escenarios configurables |
+| `GET` | `/admin/virtualpos/payments` | Inspeccionar Payments guardados |
 | `GET` | `/admin/virtualpos/webhook-deliveries` | Inspeccionar entregas de webhook |
 | `POST` | `/admin/virtualpos/reset` | Limpiar el estado del mock |
 
@@ -56,3 +56,17 @@ curl -X POST http://localhost:7000/v3/payment/UUID/webcheckout \
 ```
 
 Abre en el navegador el campo `url` de esta última respuesta.
+
+## Rechazos, estados y errores configurables
+
+Utiliza [el panel de escenarios](http://localhost:7000/mock/scenarios?provider=virtualpos)
+para forzar un rechazo documentado o un resultado pendiente, reintentando, expirado o
+cancelado. También admite errores de creación/consulta/checkout, datos que no coinciden
+y callbacks omitidos, duplicados o con UUID incorrecto.
+
+Los fallos financieros incluyen `rejected_object`; los errores de operación incluyen
+`error.error_code`, `message` y `doc_url`. Se valida que el importe sea un entero CLP
+desde 1000 y dentro del rango int32. Un Payment pagado, expirado o cancelado no se
+vuelve a cobrar; un rechazo sí permite reintentar sobre el mismo UUID.
+
+Guía completa y ejemplos de curl en [SCENARIOS.md](../SCENARIOS.md).

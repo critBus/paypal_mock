@@ -18,11 +18,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import NameOID
 from dotenv import load_dotenv
-from fastapi import Header, HTTPException, Path as FastAPIPath, Query, Request
+from fastapi import Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from app import app
+from mock_storage import ResourceStore
 
 
 load_dotenv()
@@ -74,7 +75,7 @@ DATA_PAYPAL = {
     "intentos_fallar_estado_get_order": 0,
 }
 
-ORDERS_PAYPAL: dict[str, dict[str, Any]] = {}
+ORDERS_PAYPAL = ResourceStore("paypal", "orders")
 
 # New Payment Links and Buttons API state.
 PAYMENT_RESOURCES: dict[str, dict[str, Any]] = {}
@@ -196,10 +197,7 @@ def _build_signed_webhook(
     body_crc = zlib.crc32(body)
 
     message = (
-        f"{transmission_id}|"
-        f"{transmission_time}|"
-        f"{PAYPAL_MOCK_WEBHOOK_ID}|"
-        f"{body_crc}"
+        f"{transmission_id}|{transmission_time}|{PAYPAL_MOCK_WEBHOOK_ID}|{body_crc}"
     ).encode("utf-8")
 
     signature = _WEBHOOK_PRIVATE_KEY.sign(
@@ -208,10 +206,7 @@ def _build_signed_webhook(
         hashes.SHA256(),
     )
 
-    cert_url = (
-        f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-        f"/v1/notifications/certs/{_CERTIFICATE_ID}"
-    )
+    cert_url = f"{PAYPAL_MOCK_PUBLIC_BASE_URL}/v1/notifications/certs/{_CERTIFICATE_ID}"
 
     headers = {
         "Accept": "*/*",
@@ -234,60 +229,36 @@ async def _deliver_webhook(
     resource_type: str,
     summary: str,
     resource: dict[str, Any],
+    mode: str = "normal",
 ) -> None:
     target_url = _webhook_target_url()
-
-    if not target_url:
-        print(
-            f"[PaypalMock][Webhook][{event_type}] "
-            "PAYPAL_MOCK_WEBHOOK_URL is empty. Delivery skipped."
-        )
-        return
-
     body, headers, event = _build_signed_webhook(
         event_type=event_type,
         resource_type=resource_type,
         summary=summary,
         resource=resource,
     )
-
-    delivery = {
-        "event_id": event["id"],
-        "event_type": event_type,
-        "target_url": target_url,
-        "status_code": None,
-        "error": "",
-        "created_at": paypal_datetime(),
-    }
-    WEBHOOK_DELIVERIES.append(delivery)
-
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                target_url,
-                content=body,
-                headers=headers,
-            )
-
-        delivery["status_code"] = response.status_code
-
-        print(
-            f"[PaypalMock][Webhook][{event_type}] "
-            f"{target_url} -> {response.status_code}"
-        )
-
-        if not response.is_success:
-            print(
-                f"[PaypalMock][Webhook][{event_type}] "
-                f"Response: {response.text}"
-            )
-
-    except Exception as exc:
-        delivery["error"] = str(exc)
-        print(
-            f"[PaypalMock][Webhook][{event_type}] "
-            f"Delivery error: {exc}"
-        )
+    if mode == "bad_signature":
+        headers["Paypal-Transmission-Sig"] = "AAAA"
+    for _attempt in range(2 if mode == "duplicate" else 1):
+        delivery = {
+            "event_id": event["id"],
+            "event_type": event_type,
+            "target_url": target_url,
+            "status_code": None,
+            "error": "",
+            "created_at": paypal_datetime(),
+            "skipped": mode == "suppress" or not target_url,
+        }
+        WEBHOOK_DELIVERIES.append(delivery)
+        if delivery["skipped"]:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(target_url, content=body, headers=headers)
+            delivery["status_code"] = response.status_code
+        except Exception as exc:
+            delivery["error"] = str(exc)
 
 
 async def _deliver_webhook_after_delay(
@@ -297,18 +268,16 @@ async def _deliver_webhook_after_delay(
     summary: str,
     resource: dict[str, Any],
     delay: float | None = None,
+    mode: str = "normal",
 ) -> None:
-    await asyncio.sleep(
-        PAYPAL_MOCK_WEBHOOK_DELAY_SECONDS
-        if delay is None
-        else delay
-    )
+    await asyncio.sleep(PAYPAL_MOCK_WEBHOOK_DELAY_SECONDS if delay is None else delay)
 
     await _deliver_webhook(
         event_type=event_type,
         resource_type=resource_type,
         summary=summary,
         resource=resource,
+        mode=mode,
     )
 
 
@@ -319,6 +288,7 @@ def schedule_webhook(
     summary: str,
     resource: dict[str, Any],
     delay: float | None = None,
+    mode: str = "normal",
 ) -> None:
     asyncio.create_task(
         _deliver_webhook_after_delay(
@@ -327,6 +297,7 @@ def schedule_webhook(
             summary=summary,
             resource=resource,
             delay=delay,
+            mode=mode,
         )
     )
 
@@ -349,8 +320,13 @@ async def get_mock_paypal_certificate(certificate_id: str):
 # OAuth
 # =============================================================================
 
+
 @app.post("/v1/oauth2/token")
 async def create_paypal_access_token(request: Request):
+    from paypal.orders import global_fault
+
+    if response := await global_fault("oauth"):
+        return response
     return {
         "scope": (
             "https://uri.paypal.com/services/checkout/payment-resources "
@@ -368,6 +344,7 @@ async def create_paypal_access_token(request: Request):
 # Legacy Orders v2 flow
 # =============================================================================
 
+
 class Amount(BaseModel):
     currency_code: str = Field(..., min_length=3, max_length=3)
     value: str = Field(..., pattern=r"^\d+(?:\.\d{2})?$")
@@ -379,9 +356,9 @@ class PurchaseUnit(BaseModel):
 
 
 class ExperienceContext(BaseModel):
-    payment_method_preference: Literal[
+    payment_method_preference: Literal["IMMEDIATE_PAYMENT_REQUIRED"] = (
         "IMMEDIATE_PAYMENT_REQUIRED"
-    ] = "IMMEDIATE_PAYMENT_REQUIRED"
+    )
     landing_page: Literal["GUEST_CHECKOUT"] = "GUEST_CHECKOUT"
     return_url: str
     cancel_url: str
@@ -481,17 +458,13 @@ def build_mock_response_checkout(
         "links": [
             {
                 "href": (
-                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                    f"/v2/checkout/orders/{order_id}"
+                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}/v2/checkout/orders/{order_id}"
                 ),
                 "rel": "self",
                 "method": "GET",
             },
             {
-                "href": (
-                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                    f"/checkoutnow?token={order_id}"
-                ),
+                "href": (f"{PAYPAL_MOCK_PUBLIC_BASE_URL}/checkoutnow?token={order_id}"),
                 "rel": "payer-action",
                 "method": "GET",
             },
@@ -501,20 +474,9 @@ def build_mock_response_checkout(
 
 @app.post("/v2/checkout/orders")
 async def create_legacy_paypal_order(request: CaptureRequest):
-    for purchase_unit in request.purchase_units:
-        if (
-            purchase_unit.amount.currency_code == "CLP"
-            and "." in purchase_unit.amount.value
-        ):
-            return JSONResponse(
-                status_code=422,
-                content=build_decimals_not_supported_response(purchase_unit),
-            )
+    from paypal.orders import create_order
 
-    return JSONResponse(
-        status_code=201,
-        content=build_mock_response_checkout(request),
-    )
+    return await create_order(request)
 
 
 def _legacy_approved_webhook_resource(
@@ -585,6 +547,7 @@ def _legacy_checkout_html(order: dict[str, Any]) -> str:
             <p><strong>Order:</strong> {order_id}</p>
             <p><strong>Reference:</strong> {reference_id}</p>
             <p><strong>Status:</strong> {status}</p>
+            <p><a href="/mock/scenarios?provider=paypal&resource_id={order_id}">Configurar errores de esta orden</a></p>
             {action_block}
             <div class="links">
                 {continue_link}
@@ -618,304 +581,33 @@ async def legacy_checkout_page(
     response_class=HTMLResponse,
 )
 async def approve_legacy_order(order_id: str):
-    order = ORDERS_PAYPAL.get(order_id)
+    from paypal.orders import approve
 
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    if order["status"] == "COMPLETED":
-        return HTMLResponse(_legacy_checkout_html(order))
-
-    if order["status"] != "APPROVED":
-        order["status"] = "APPROVED"
-
-    if not order["approved_webhook_sent"]:
-        order["approved_webhook_sent"] = True
-
-        schedule_webhook(
-            event_type="CHECKOUT.ORDER.APPROVED",
-            resource_type="checkout-order",
-            summary="An order has been approved by buyer",
-            resource=_legacy_approved_webhook_resource(order),
-            delay=0.0,
-        )
-
-    return HTMLResponse(
-        _checkout_page(
-            title="PayPal Mock - Pago aprobado",
-            subtitle="CHECKOUT.ORDER.APPROVED encolado",
-            body=f"""
-            <div class="card">
-                <div class="notice success">
-                    Pago aprobado localmente.
-                </div>
-                <p>
-                    El mock envió <code>CHECKOUT.ORDER.APPROVED</code>.
-                    CrinnoPayments debe consultar la orden y ejecutar
-                    <code>/capture</code>.
-                </p>
-                <p><strong>Order:</strong> {html.escape(order_id)}</p>
-                <a class="secondary"
-                   href="/checkoutnow?token={html.escape(order_id)}">
-                    Ver estado
-                </a>
-            </div>
-            """,
-        )
-    )
+    return await approve(order_id)
 
 
 @app.post("/v2/checkout/orders/{order_id}/capture")
 async def capture_order(
-    order_id: str = FastAPIPath(
-        ...,
-        description="ID de la orden a capturar",
-    ),
-    authorization: str = Header(
-        ...,
-        description="Bearer token for authentication",
-    ),
-    paypal_request_id: str = Header(
-        ...,
-        alias="PayPal-Request-Id",
-        description="Unique request ID for idempotency",
-    ),
+    order_id: str,
+    authorization: str = Header(default=""),
+    paypal_request_id: str = Header(default="", alias="PayPal-Request-Id"),
 ):
-    if (
-        not authorization.startswith("Bearer ")
-        or not authorization.removeprefix("Bearer ").strip()
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail=(
-                "Invalid authorization header. "
-                "Expected format: 'Bearer <token>'"
-            ),
-        )
+    from paypal.orders import capture
 
-    if (
-        not paypal_request_id
-        or not paypal_request_id.strip()
-        or len(paypal_request_id.strip()) > 107
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Missing or empty PayPal-Request-Id header "
-                "required for idempotency"
-            ),
-        )
-
-    order = ORDERS_PAYPAL.get(order_id)
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    if DATA_PAYPAL["fallar_captura"]:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "name": "UNPROCESSABLE_ENTITY",
-                "details": [
-                    {
-                        "issue": "TRANSACTION_REFUSED",
-                        "description": "The request was refused",
-                    }
-                ],
-                "message": (
-                    "The requested action could not be performed, "
-                    "semantically incorrect, or failed business validation."
-                ),
-                "debug_id": uuid.uuid4().hex[:13],
-            },
-        )
-
-    if (
-        DATA_PAYPAL["fallar_primer_intento_capture_order"]
-        and DATA_PAYPAL["intentos_capture_order"] == 0
-    ):
-        DATA_PAYPAL["intentos_capture_order"] = 1
-        raise HTTPException(
-            status_code=502,
-            detail="Error procesando pago con PayPal",
-        )
-
-    # Make capture idempotent in the mock as well.
-    if not order["capture_id"]:
-        order["capture_id"] = uuid.uuid4().hex[:17].upper()
-
-    capture_id = order["capture_id"]
-    order["status"] = "COMPLETED"
-
-    current_time = paypal_datetime()
-
-    response = {
-        "id": order_id,
-        "status": "COMPLETED",
-        "payment_source": {
-            "paypal": {
-                "email_address": "example@gmail.com",
-                "account_id": "MOCKACCOUNT",
-                "account_status": "VERIFIED",
-                "name": {
-                    "given_name": "John",
-                    "surname": "Doe",
-                },
-                "address": {
-                    "country_code": "SR",
-                },
-            }
-        },
-        "purchase_units": [
-            {
-                "reference_id": order["reference_id"],
-                "payments": {
-                    "captures": [
-                        {
-                            "id": capture_id,
-                            "status": "COMPLETED",
-                            "amount": {
-                                "currency_code": order["currency"],
-                                "value": order["amount"],
-                            },
-                            "final_capture": True,
-                            "create_time": current_time,
-                            "update_time": current_time,
-                            "links": [
-                                {
-                                    "href": (
-                                        f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                                        f"/v2/payments/captures/{capture_id}"
-                                    ),
-                                    "rel": "self",
-                                    "method": "GET",
-                                },
-                                {
-                                    "href": (
-                                        f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                                        f"/v2/checkout/orders/{order_id}"
-                                    ),
-                                    "rel": "up",
-                                    "method": "GET",
-                                },
-                            ],
-                        }
-                    ]
-                },
-            }
-        ],
-        "payer": {
-            "name": {
-                "given_name": "John",
-                "surname": "Doe",
-            },
-            "email_address": "customer@example.com",
-            "payer_id": "MOCKPAYER",
-            "address": {
-                "country_code": "SR",
-            },
-        },
-        "links": [
-            {
-                "href": (
-                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                    f"/v2/checkout/orders/{order_id}"
-                ),
-                "rel": "self",
-                "method": "GET",
-            }
-        ],
-    }
-
-    return JSONResponse(status_code=201, content=response)
+    return await capture(order_id, authorization, paypal_request_id)
 
 
 @app.get("/v2/checkout/orders/{order_id}")
 async def get_order_details(order_id: str):
-    order = ORDERS_PAYPAL.get(order_id)
+    from paypal.orders import details
 
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    if (
-        DATA_PAYPAL["fallar_primer_intento_get_order"]
-        and DATA_PAYPAL["intentos_get_order"] == 0
-    ):
-        DATA_PAYPAL["intentos_get_order"] = 1
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    status = order["status"]
-
-    if (
-        DATA_PAYPAL["fallar_estado_get_order"]
-        and DATA_PAYPAL["intentos_fallar_estado_get_order"] == 0
-    ):
-        DATA_PAYPAL["intentos_fallar_estado_get_order"] = 1
-        status = "OTRO"
-
-    return {
-        "id": order_id,
-        "status": status,
-        "intent": "CAPTURE",
-        "payment_source": {
-            "paypal": {
-                "name": {
-                    "given_name": "John",
-                    "surname": "Doe",
-                },
-                "email_address": "customer@example.com",
-                "account_id": "MOCKACCOUNT",
-            }
-        },
-        "purchase_units": [
-            {
-                "reference_id": order["reference_id"],
-                "amount": {
-                    "currency_code": order["currency"],
-                    "value": order["amount"],
-                },
-            }
-        ],
-        "payer": {
-            "name": {
-                "given_name": "John",
-                "surname": "Doe",
-            },
-            "email_address": "customer@example.com",
-            "payer_id": "MOCKPAYER",
-        },
-        "create_time": order["created_at"],
-        "links": [
-            {
-                "href": (
-                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                    f"/v2/checkout/orders/{order_id}"
-                ),
-                "rel": "self",
-                "method": "GET",
-            },
-            {
-                "href": (
-                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                    f"/checkoutnow?token={order_id}"
-                ),
-                "rel": "approve",
-                "method": "GET",
-            },
-            {
-                "href": (
-                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                    f"/v2/checkout/orders/{order_id}/capture"
-                ),
-                "rel": "capture",
-                "method": "POST",
-            },
-        ],
-    }
+    return await details(order_id)
 
 
 # =============================================================================
 # Payment Links and Buttons API flow
 # =============================================================================
+
 
 class PaymentResourceAmount(BaseModel):
     currency_code: str = Field(..., min_length=3, max_length=3)
@@ -997,8 +689,7 @@ def _payment_resource_api_response(
             {
                 "rel": "payment_link",
                 "href": (
-                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-                    f"/ncp/payment/{payment_resource_id}"
+                    f"{PAYPAL_MOCK_PUBLIC_BASE_URL}/ncp/payment/{payment_resource_id}"
                 ),
                 "method": "GET",
             },
@@ -1140,10 +831,7 @@ async def create_payment_resource(
     payment_resource_id = generate_payment_resource_id()
     now = paypal_datetime()
 
-    line_items = [
-        _model_to_dict(item)
-        for item in request_data.line_items
-    ]
+    line_items = [_model_to_dict(item) for item in request_data.line_items]
 
     # Match the real response observed in sandbox.
     for item in line_items:
@@ -1299,6 +987,7 @@ def _payment_resource_checkout_html(
 
             <p><strong>Status:</strong> {status}</p>
 
+
             <ul class="items">
                 {items_html}
             </ul>
@@ -1333,9 +1022,7 @@ async def payment_resource_checkout_page(
             status_code=410,
         )
 
-    return HTMLResponse(
-        _payment_resource_checkout_html(resource)
-    )
+    return HTMLResponse(_payment_resource_checkout_html(resource))
 
 
 @app.post(
@@ -1391,9 +1078,7 @@ async def complete_payment_resource(
     return HTMLResponse(
         _checkout_page(
             title="PayPal Mock - Pago completado",
-            subtitle=(
-                "CHECKOUT.PAYMENT-RESOURCE.PAYMENT-COMPLETED encolado"
-            ),
+            subtitle=("CHECKOUT.PAYMENT-RESOURCE.PAYMENT-COMPLETED encolado"),
             body=f"""
             <div class="card">
                 <div class="notice success">
@@ -1434,6 +1119,7 @@ async def complete_payment_resource(
 # Diagnostics
 # =============================================================================
 
+
 @app.get("/mock/paypal/state")
 async def paypal_mock_state():
     return {
@@ -1441,10 +1127,9 @@ async def paypal_mock_state():
         "webhook_url": _webhook_target_url(),
         "webhook_id": PAYPAL_MOCK_WEBHOOK_ID,
         "certificate_url": (
-            f"{PAYPAL_MOCK_PUBLIC_BASE_URL}"
-            f"/v1/notifications/certs/{_CERTIFICATE_ID}"
+            f"{PAYPAL_MOCK_PUBLIC_BASE_URL}/v1/notifications/certs/{_CERTIFICATE_ID}"
         ),
-        "legacy_orders": ORDERS_PAYPAL,
+        "legacy_orders": dict(ORDERS_PAYPAL),
         "payment_resources": PAYMENT_RESOURCES,
         "webhook_deliveries": WEBHOOK_DELIVERIES[-50:],
     }
@@ -1453,6 +1138,7 @@ async def paypal_mock_state():
 # =============================================================================
 # Minimal local checkout UI
 # =============================================================================
+
 
 def _checkout_page(
     *,
@@ -1601,3 +1287,7 @@ def _not_available_page(
         </div>
         """,
     )
+
+
+# Register scenario controls after the shared signing/checkout helpers are defined.
+from paypal import orders as _orders  # noqa: E402, F401

@@ -41,7 +41,7 @@ En contenedores, guarda ese archivo en un volumen persistente.
 
 Para empezar de cero, detén el servidor y elimina el archivo SQLite. Los datos
 que estaban únicamente en memoria antes de esta versión deberán crearse una
-última vez. El resto de los TPV conserva su almacenamiento actual.
+última vez. PayPal Orders v2 y VirtualPOS también conservan sus datos; consulta los escenarios de prueba descritos más abajo.
 
 Pruebas: `uv run pytest tests`. Usan bases temporales y no modifican los datos
 locales.
@@ -51,3 +51,12 @@ locales.
 El simulador incorpora Hosted Link, autorización bancaria, cuentas, saldos,
 transacciones, estados bancarios, pagos europeos, Transfer y webhooks ES256.
 Configuración y ejemplos en [plaid/README.md](plaid/README.md).
+
+## Escenarios de pagos y reportes
+
+Abre [el panel de escenarios](http://localhost:7000/mock/scenarios) para forzar
+fallos de PayPal y VirtualPOS por pago o para los próximos pagos: 404 estructurado,
+rechazos, capturas pendientes, pérdida de respuesta, errores de API y webhooks
+omitidos/duplicados/incorrectos. Los escenarios y estos pagos sobreviven a reinicios.
+
+Ejemplos, controles avanzados, persistencia y guía de pruebas en [SCENARIOS.md](SCENARIOS.md).
