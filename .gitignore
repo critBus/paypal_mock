@@ -121,3 +121,6 @@ uv.lock
 
 # Local durable mock scenarios and payments
 data/scenarios.sqlite3*
+
+# Per-checkout CodeGraph index and runtime files
+.codegraph/

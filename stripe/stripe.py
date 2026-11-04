@@ -25,7 +25,6 @@ import json
 import os
 import secrets
 import time
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -320,7 +319,15 @@ def _event_targets(event_type: str) -> list[dict[str, Any]]:
         if "*" in enabled or event_type in enabled:
             targets.append(endpoint)
 
-    if not targets and STRIPE_MOCK_WEBHOOK_URL:
+    # The environment listener represents an independently configured endpoint
+    # (like a local Stripe CLI listener). Managed endpoints must not suppress it:
+    # another CrinnoPayments configuration may trust only this signing secret.
+    environment_is_registered = any(
+        endpoint.get("url") == STRIPE_MOCK_WEBHOOK_URL
+        and (endpoint.get("secret") or STRIPE_MOCK_WEBHOOK_SECRET) == STRIPE_MOCK_WEBHOOK_SECRET
+        for endpoint in targets
+    )
+    if STRIPE_MOCK_WEBHOOK_URL and not environment_is_registered:
         targets.append(
             {
                 "id": "we_environment",
