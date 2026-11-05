@@ -135,3 +135,12 @@ that format. The MCP server watches source changes while it runs. Clients using
 another MCP configuration format need their own adapter; the CLI remains usable
 through [AGENTS.md](AGENTS.md). Restart/reload the client's MCP connection after
 registering it; an index on disk does not imply an active MCP connection.
+
+## Noon
+
+The local Noon simulator supports CrinnoPayments hosted SALE/AUTHORIZE checkout, full capture, unpaid cancellation,
+reconciliation by ID/reference, native expiry and signed v2 callbacks. Open **http://localhost:7000/mock-noon**.
+Orders, scenarios and event snapshots persist independently in `data/noon.sqlite3`.
+
+Use CrinnoPayments' development settings for HTTP API, callback and checkout URLs. HTTPS remains required outside
+that environment. Fake credentials, configuration, failure scenarios and examples are in [noon/README.md](noon/README.md).

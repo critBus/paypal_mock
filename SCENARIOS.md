@@ -252,3 +252,11 @@ el modo de entrega configurado; no crean un segundo pago ni otro evento remoto.
 
 Pruebas: `uv run pytest tests/test_paypal_link_recovery.py`. Todos los callbacks
 están interceptados y las bases son temporales; no notifican a servicios reales.
+
+## Noon
+
+Open [/mock-noon](http://localhost:7000/mock-noon) for future-order/per-order scenarios, manual state resolution and
+original-event replay. Includes authorization/capture, cancellation/expiry, pending/failed/rejected states, lost API
+responses, field corruption, missing checkout, duplicate/suppressed/invalid-JWS callbacks and delayed responses.
+See [the Noon guide](noon/README.md) for the HTTP-only local setup and exact control payloads. It does not change
+PayPal/VirtualPOS controls or reproduce unsupported real Noon refund/reversal flows.

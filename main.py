@@ -28,6 +28,7 @@ from axxipay.axxipay import *
 from virtualpos.virtualpos import *
 from stripe.stripe import *
 from plaid.plaid import *
+import noon.noon  # noqa: F401 - registers routes on the shared app
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from config import settings
@@ -471,6 +472,7 @@ async def home():
     <body>
         <div class="container">
             <p><a href="/mock/scenarios">Configurar escenarios de PayPal y VirtualPOS</a></p>
+            <p><a href="/mock-noon">Noon checkout and scenarios</a></p>
             <h1>Simulador de Webhooks de PayPal</h1>
             <div class="note">
                 <strong>Importante:</strong> Este simulador te permite probar localmente la validación de webhooks de PayPal.

@@ -34,3 +34,11 @@ def isolated_scenario_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(mock_paypal, "DATA_PAYPAL", dict(mock_paypal.DATA_PAYPAL))
     monkeypatch.setattr(mock_paypal, "WEBHOOK_DELIVERIES", [])
     monkeypatch.setattr(mock_virtualpos, "WEBHOOK_DELIVERIES", [])
+
+
+@pytest.fixture(autouse=True)
+def isolated_noon_storage(tmp_path, monkeypatch):
+    from noon import noon as mock_noon
+    from noon.storage import NoonStorage
+
+    monkeypatch.setattr(mock_noon, "storage", NoonStorage(tmp_path / "noon.sqlite3"))
