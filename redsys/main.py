@@ -1,10 +1,5 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from typing import List, Optional
-import asyncio
 from config import settings
 from .schemas import (
     WebhookSimulationRequest,
@@ -19,6 +14,7 @@ from .schemas import (
 from .services import RedsysWebhookSimulator
 from fastapi.responses import FileResponse
 from app import app
+from . import paygold  # noqa: F401 - register REST and hosted checkout routes
 
 # app = FastAPI(
 #     title="Redsys Testing API",
@@ -47,11 +43,12 @@ simulator = RedsysWebhookSimulator()
 # ENDPOINTS PRINCIPALES
 # ============================================================================
 
+
 @app.post(
     "/parse-form",
     response_model=FormParseResponse,
     summary="Parsear Formulario Redsys",
-    description="Extrae los datos del formulario HTML de Redsys"
+    description="Extrae los datos del formulario HTML de Redsys",
 )
 async def parse_form(request: FormParseRequest):
     """
@@ -60,18 +57,18 @@ async def parse_form(request: FormParseRequest):
     print("Entra aqui?????????")
     result = simulator.parse_form(request.form_html)
     print("paso por el simulator.parse_form????")
-    
+
     if result["success"]:
         return FormParseResponse(
             success=True,
             message="Formulario parseado correctamente",
-            data=result["data"]
+            data=result["data"],
         )
     else:
         raise HTTPException(
-            status_code=400,
-            detail=result.get("error", "Error parseando formulario")
+            status_code=400, detail=result.get("error", "Error parseando formulario")
         )
+
 
 @app.post(
     "/simulate-webhook",
@@ -85,7 +82,7 @@ async def parse_form(request: FormParseRequest):
     - `9915`: Cancelado por usuario
     - `0101-0199`: Errores de tarjeta
     - `9000-9999`: Errores del sistema
-    """
+    """,
 )
 async def simulate_webhook(request: WebhookSimulationRequest):
     """
@@ -98,13 +95,12 @@ async def simulate_webhook(request: WebhookSimulationRequest):
     if not amount or not currency:
         raise HTTPException(
             status_code=502,
-            detail=f"Error enviando webhook a Django: amount {amount} | currency {currency}"
+            detail=f"Error enviando webhook a Django: amount {amount} | currency {currency}",
         )
-    
-    
+
     # currency_map = {"USD": "840", "EUR": "978", "MXN": "484"}
     # currency = currency_map.get(currency, "840")
-    
+
     # Si no se proporciona amount, intentar obtenerlo de la orden
     # if not amount:
     #     order_info = await simulator.get_order_status(request.order_number)
@@ -113,24 +109,24 @@ async def simulate_webhook(request: WebhookSimulationRequest):
     #         currency_code = order_info["data"].get("currency", "USD")
     #         currency_map = {"USD": "840", "EUR": "978", "MXN": "484"}
     #         currency = currency_map.get(currency_code, "840")
-    
+
     # Enviar webhook simulado
     result = await simulator.send_webhook_to_django(
         order_number=request.order_number,
         response_code=request.response_code,
         amount=amount,
         currency=currency,
-        simulate_signature=request.simulate_signature
+        simulate_signature=request.simulate_signature,
     )
-    
+
     if not result.get("success"):
         raise HTTPException(
             status_code=502,
-            detail=f"Error enviando webhook a Django: {result.get('error', 'Unknown error')}"
+            detail=f"Error enviando webhook a Django: {result.get('error', 'Unknown error')}",
         )
-    
+
     payment_status = simulator.get_payment_status(request.response_code)
-    
+
     return WebhookSimulationResponse(
         success=True,
         message=f"Webhook simulado enviado correctamente. Código: {request.response_code}",
@@ -141,11 +137,12 @@ async def simulate_webhook(request: WebhookSimulationRequest):
         raw_webhook_data=result.get("decoded_params"),
     )
 
+
 @app.get(
     "/order-status/{order_number}",
     response_model=OrderStatusResponse,
     summary="Obtener Estado de Orden",
-    description="Consulta el estado actual de una orden en la API Django"
+    description="Consulta el estado actual de una orden en la API Django",
 )
 async def get_order_status(order_number: str):
     """
@@ -155,9 +152,9 @@ async def get_order_status(order_number: str):
     if not result.get("success"):
         raise HTTPException(
             status_code=404,
-            detail=f"Orden no encontrada o error: {result.get('error', 'Unknown error')}"
+            detail=f"Orden no encontrada o error: {result.get('error', 'Unknown error')}",
         )
-    
+
     data = result.get("data", {})
     return OrderStatusResponse(
         order_number=data.get("order_number", order_number),
@@ -169,86 +166,98 @@ async def get_order_status(order_number: str):
         checkout_url=data.get("checkout_url"),
     )
 
+
 @app.get(
     "/response-codes",
     response_model=RedsysResponseCodes,
     summary="Códigos de Respuesta Redsys",
-    description="Lista de códigos de respuesta comunes de Redsys para testing"
+    description="Lista de códigos de respuesta comunes de Redsys para testing",
 )
 async def get_response_codes():
     """
     Retorna los códigos de respuesta de Redsys clasificados por tipo
     """
     success_codes = [
-        RedsysResponseCode(code=code, description=info["description"], status=PaymentStatus(info["status"]))
+        RedsysResponseCode(
+            code=code,
+            description=info["description"],
+            status=PaymentStatus(info["status"]),
+        )
         for code, info in simulator.RESPONSE_CODES.items()
         if info["status"] == "paid"
     ]
     error_codes = [
-        RedsysResponseCode(code=code, description=info["description"], status=PaymentStatus(info["status"]))
+        RedsysResponseCode(
+            code=code,
+            description=info["description"],
+            status=PaymentStatus(info["status"]),
+        )
         for code, info in simulator.RESPONSE_CODES.items()
         if info["status"] == "failed"
     ]
     cancel_codes = [
-        RedsysResponseCode(code=code, description=info["description"], status=PaymentStatus(info["status"]))
+        RedsysResponseCode(
+            code=code,
+            description=info["description"],
+            status=PaymentStatus(info["status"]),
+        )
         for code, info in simulator.RESPONSE_CODES.items()
         if info["status"] == "cancelled"
     ]
-    
+
     return RedsysResponseCodes(
         success_codes=success_codes,
         error_codes=error_codes,
         cancel_codes=cancel_codes,
     )
 
+
 @app.post(
     "/simulate-success/{order_number}",
     response_model=WebhookSimulationResponse,
     summary="Simular Pago Exitoso",
-    description="Atajo para simular un pago exitoso (código 0000)"
+    description="Atajo para simular un pago exitoso (código 0000)",
 )
 async def simulate_success(order_number: str):
     """Simula un pago exitoso"""
     request = WebhookSimulationRequest(
-        order_number=order_number,
-        response_code="0000",
-        simulate_signature=True
+        order_number=order_number, response_code="0000", simulate_signature=True
     )
     return await simulate_webhook(request)
+
 
 @app.post(
     "/simulate-failure/{order_number}",
     response_model=WebhookSimulationResponse,
     summary="Simular Pago Fallido",
-    description="Atajo para simular un pago fallido (código 0101 - Tarjeta caducada)"
+    description="Atajo para simular un pago fallido (código 0101 - Tarjeta caducada)",
 )
 async def simulate_failure(order_number: str):
     """Simula un pago fallido"""
     request = WebhookSimulationRequest(
-        order_number=order_number,
-        response_code="0101",
-        simulate_signature=True
+        order_number=order_number, response_code="0101", simulate_signature=True
     )
     return await simulate_webhook(request)
+
 
 @app.post(
     "/simulate-cancelled/{order_number}",
     response_model=WebhookSimulationResponse,
     summary="Simular Pago Cancelado",
-    description="Atajo para simular un pago cancelado (código 9915)"
+    description="Atajo para simular un pago cancelado (código 9915)",
 )
 async def simulate_cancelled(order_number: str):
     """Simula un pago cancelado"""
     request = WebhookSimulationRequest(
-        order_number=order_number,
-        response_code="9915",
-        simulate_signature=True
+        order_number=order_number, response_code="9915", simulate_signature=True
     )
     return await simulate_webhook(request)
+
 
 # ============================================================================
 # INTERFAZ WEB PARA TESTING (CON CSS LOCAL)
 # ============================================================================
+
 
 @app.get("/redsys", response_class=HTMLResponse, include_in_schema=False)
 async def testing_ui(request: Request):
@@ -260,9 +269,11 @@ async def testing_ui(request: Request):
     #     "api_base": "http://localhost:8000"
     # })
 
+
 # ============================================================================
 # HEALTH CHECK
 # ============================================================================
+
 
 @app.get("/health", tags=["Health"])
 async def health_check():
@@ -274,6 +285,7 @@ async def health_check():
         "static_dir_exists": settings.STATIC_DIR.exists(),
         "templates_dir_exists": settings.TEMPLATES_DIR.exists(),
     }
+
 
 # if __name__ == "__main__":
 #     import uvicorn

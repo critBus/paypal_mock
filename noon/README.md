@@ -103,7 +103,7 @@ use a reachable host name in each URL. No production HTTPS or signature validati
 The panel applies controls to **future orders** or a selected existing order. Controls replace only that target's
 settings; applying them does not itself change a payment or send a callback. `normal` clears faults for that target.
 
-Available presets: normal, no_webhook, duplicate_webhook, invalid_signature, wrong_kid, wrong_algorithm,
+Available presets: normal, security_violation, suspect_fraud, closed_account, no_webhook, duplicate_webhook, invalid_signature, wrong_kid, wrong_algorithm,
 malformed_webhook, capture_pending, capture_declined, capture_lost_response, initiate_lost_response, missing_checkout,
 get_unavailable, invalid_json, wrong_amount, wrong_currency, wrong_id, wrong_reference, captured_amount_mismatch.
 
@@ -172,3 +172,70 @@ Completed verification (2026-11-04):
   URLs in development. Production/staging rejection and DEBUG independence passed backend tests.
 - No real provider account, remote database or existing mock data was used. This verifies the current consumer
   contract, not real Noon sandbox certification or the provider's complete banking/routing/retry behavior.
+
+## Banking rejection reports
+
+The checkout outcome selector and the Noon controls dashboard support these deterministic issuer rejections:
+
+| Scenario/outcome | Order error code | Provider message | Synthetic card |
+| --- | --- | --- | --- |
+| `security_violation` | 63 | Security violation (Banking Error Code: 63). | VISA / `411111xxxxxx1111` / MOCK VISA BANK |
+| `suspect_fraud` | 59 | Suspect fraud (Banking Error Code: 59). | VISA / `411111xxxxxx1111` / MOCK VISA BANK |
+| `closed_account` | 46 | Closed account (Banking Error Code: 46). | MASTERCARD / `555555xxxxxx4444` / MOCK MASTERCARD BANK |
+
+Select an outcome at checkout, or apply the corresponding scenario to one existing order (or to future orders)
+and simulate a successful checkout. The scenario converts that attempt into the selected banking rejection.
+Applying controls alone does not fail the payment or emit a webhook.
+
+INITIATE still succeeds and returns an INITIATED order. Checkout changes it to FAILED, emits the normal signed v2 Fail
+event and persists its rejection. Subsequent GETs return HTTP 200 and resultCode 0 because the lookup succeeded;
+`result.order.errorCode/errorMessage` explain the failed payment, and `result.transactions` contains the matching
+FAILURE transaction, amount, currency, error code and message. `result.paymentDetails` contains `brand`,
+`paymentInfo` and `cardIssuerName` from the same persisted attempt. GET by ID and by reference return the same
+card details; the dashboard displays them beside the rejection. All card/bank values above are synthetic.
+No funds are captured. Duplicate simulation does not append another
+transaction or event. Replays retain the original event. Existing orders and other providers are unchanged.
+
+Create the synthetic request in CrinnoPayments first, complete the local checkout with one of these outcomes and wait
+for the local Huey worker to reconcile the signed webhook. In the Noon payment report, search the synthetic commercial
+order code or email: the banking message must appear even though the retrieval log has HTTP 200/resultCode 0.
+Use the communications TXT download to inspect both the initial successful INITIATE and the failed-payment GET.
+
+
+### Consultable examples
+
+For a separate demo instance that preserves the regular mock's data and suppresses all callbacks:
+
+```sh
+NOON_MOCK_DB_PATH=data/noon-report-examples.sqlite3 \
+NOON_MOCK_CHECKOUT_BASE_URL=http://localhost:7017 \
+NOON_MOCK_WEBHOOK_URL='' \
+uv run uvicorn main:app --host 127.0.0.1 --port 7017
+```
+
+Create a synthetic order (the authorization value below encodes only the documented mock credentials):
+
+```sh
+curl http://localhost:7017/payment/v1/order \
+  -H 'Authorization: Key bW9jay1idXNpbmVzcy5tb2NrLWFwcDptb2NrLWFwcGxpY2F0aW9uLWtleQ==' \
+  -H 'Content-Type: application/json' \
+  -d '{"apiOperation":"INITIATE","order":{"amount":"10.00","currency":"CAD","reference":"MOCK-NOON-FRAUD-59","name":"Synthetic report example","category":"pay","channel":"WEB"},"configuration":{"paymentAction":"SALE","webhookUrl":""}}'
+```
+
+Use the returned `result.order.id` to simulate the rejection without callbacks:
+
+```sh
+curl http://localhost:7017/mock-noon/orders/YOUR_ORDER_ID/simulate \
+  -H 'Content-Type: application/json' \
+  -d '{"outcome":"suspect_fraud","notify":false}'
+
+curl http://localhost:7017/payment/v1/order/getbyreference/MOCK-NOON-FRAUD-59 \
+  -H 'Authorization: Key bW9jay1idXNpbmVzcy5tb2NrLWFwcDptb2NrLWFwcGxpY2F0aW9uLWtleQ=='
+```
+
+For the Mastercard example use reference `MOCK-NOON-CLOSED-46` and outcome `closed_account`.
+Open [the isolated dashboard](http://localhost:7017/mock-noon) to inspect the examples. The SQLite file retains them
+across restarts. These directly created mock orders do not create requests or API logs in CrinnoPayments. To see an
+example in its failure reports, create the request through CrinnoPayments using a local configuration pointing to
+this mock, then select the rejection in its checkout and reconcile through CrinnoPayments. On the demo instance,
+callbacks are disabled, so use explicit reconciliation; the normal instance retains its configured webhook behavior.

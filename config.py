@@ -7,15 +7,18 @@ class Settings(BaseSettings):
     DJANGO_API_URL: str = "http://localhost:8001"
     
     # Redsys Testing Config (valores por defecto de testing Redsys)
-    REDSYS_TEST_MERCHANT_KEY: str = "asdasasd"
+    REDSYS_TEST_MERCHANT_KEY: str = "sq7HjrUOBfKmC576ILgskD5srU870gJ7"  # Public sandbox fixture
     REDSYS_TEST_MERCHANT_CODE: str = "123213213"
     REDSYS_TEST_TERMINAL: str = "002"
+    REDSYS_MOCK_MERCHANT_KEY: Optional[str] = None
+    REDSYS_MOCK_PUBLIC_URL: Optional[str] = None
     
     # App Key para autenticación con Django API
     REDSYS_APP_KEY: Optional[str] = None
     
     # Paths
     BASE_DIR: Path = Path(__file__).parent
+    REDSYS_MOCK_DB_PATH: Path = BASE_DIR / "data" / "redsys.sqlite3"
     REVOLUT_MOCK_DB_PATH: Path = BASE_DIR / "data" / "revolut.sqlite3"
     MOCK_SCENARIOS_DB_PATH: Path = BASE_DIR / "data" / "scenarios.sqlite3"
     STATIC_DIR: Path = BASE_DIR / "static"

@@ -144,3 +144,10 @@ Orders, scenarios and event snapshots persist independently in `data/noon.sqlite
 
 Use CrinnoPayments' development settings for HTTP API, callback and checkout URLs. HTTPS remains required outside
 that environment. Fake credentials, configuration, failure scenarios and examples are in [noon/README.md](noon/README.md).
+
+## Redsys PayGold and signed form checkout
+
+The Redsys mock now supports signed REST hosted-link creation (`F`), native expiry and remote deactivation (`51`),
+a local checkout, callback scenarios and durable SQLite links/delivery history. The legacy manual simulator remains
+at `/redsys`; hosted-link controls are at `/mock/redsys/paygold`.
+See [Redsys setup, protocol and scenarios](redsys/README.md) for CrinnoPayments URLs, signing keys and testing limits.

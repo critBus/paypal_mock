@@ -18,6 +18,8 @@
     <div class="max-w-6xl mx-auto">
         <h1 class="text-3xl font-bold text-center mb-8 text-blue-600">🧪 Redsys Testing API</h1>
         
+        <p class="text-center mb-6"><a class="text-blue-600 underline" href="/mock/redsys/paygold">PayGold hosted links and scenarios</a></p>
+
         <!-- Sección 1: Parsear Formulario -->
         <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
             <h2 class="text-xl font-semibold mb-4">📋 1. Pegar Formulario Redsys</h2>
@@ -127,7 +129,7 @@
     <script src="/static/js/tailwind.js" > </script>
 
     <script>
-        const API_BASE = 'http://localhost:7000';
+        const API_BASE = window.location.origin;
         var amount_data="";
         
         // Parsear Formulario

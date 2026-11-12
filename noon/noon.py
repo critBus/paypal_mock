@@ -54,7 +54,32 @@ STATES = (
     }
 )
 OPERATIONS = {"INITIATE", "GET", "GET_BY_REFERENCE", "CAPTURE", "CANCEL"}
+BANK_DECLINES = {
+    "security_violation": (63, "Security violation (Banking Error Code: 63)."),
+    "suspect_fraud": (59, "Suspect fraud (Banking Error Code: 59)."),
+    "closed_account": (46, "Closed account (Banking Error Code: 46)."),
+}
+BANK_DECLINE_CARDS = {
+    "security_violation": {
+        "brand": "VISA",
+        "paymentInfo": "411111xxxxxx1111",
+        "cardIssuerName": "MOCK VISA BANK",
+    },
+    "suspect_fraud": {
+        "brand": "VISA",
+        "paymentInfo": "411111xxxxxx1111",
+        "cardIssuerName": "MOCK VISA BANK",
+    },
+    "closed_account": {
+        "brand": "MASTERCARD",
+        "paymentInfo": "555555xxxxxx4444",
+        "cardIssuerName": "MOCK MASTERCARD BANK",
+    },
+}
 SCENARIOS = {
+    "security_violation": {"checkout_outcome": "security_violation"},
+    "suspect_fraud": {"checkout_outcome": "suspect_fraud"},
+    "closed_account": {"checkout_outcome": "closed_account"},
     "normal": {},
     "no_webhook": {"webhook_mode": "suppress"},
     "duplicate_webhook": {"webhook_mode": "duplicate"},
@@ -125,6 +150,9 @@ class Controls(BaseModel):
         | None
     ) = None
     webhook_delay_seconds: float = Field(default=0, ge=0, le=30)
+    checkout_outcome: (
+        Literal["security_violation", "suspect_fraud", "closed_account"] | None
+    ) = None
     capture_outcome: (
         Literal["completed", "pending", "declined", "lost_response"] | None
     ) = None
@@ -213,6 +241,16 @@ def envelope(order):
         "requestReference": str(uuid4()),
         "result": {
             "order": view(order),
+            **(
+                {"paymentDetails": copy.deepcopy(order["_payment_details"])}
+                if "_payment_details" in order
+                else {}
+            ),
+            **(
+                {"transactions": copy.deepcopy(order["_transactions"])}
+                if "_transactions" in order
+                else {}
+            ),
             "checkoutData": {
                 "postUrl": f"{public_url()}/mock-noon/checkout/{order['_token']}"
             },
@@ -623,6 +661,9 @@ async def noon_orders():
             "amount": order["amount"],
             "currency": order["currency"],
             "status": order["status"],
+            "error_code": order.get("errorCode", 0),
+            "error_message": order.get("errorMessage", ""),
+            "payment_details": copy.deepcopy(order.get("_payment_details", {})),
             "payment_action": order["_configuration"].get("paymentAction", "SALE"),
             "checkout_path": f"/mock-noon/checkout/{order['_token']}",
             "events": order["_events"],
@@ -638,6 +679,9 @@ async def noon_controls():
         "defaults": storage.defaults(),
         "scenarios": list(SCENARIOS),
         "states": sorted(STATES),
+        "bank_declines": {
+            name: message for name, (_code, message) in BANK_DECLINES.items()
+        },
     }
 
 
@@ -649,7 +693,7 @@ async def noon_set_controls(data: Controls):
         raise HTTPException(422, "Unknown scenario or operation")
     config = copy.deepcopy(SCENARIOS[data.scenario])
     config["webhook_delay_seconds"] = data.webhook_delay_seconds
-    for name in ("webhook_mode", "capture_outcome"):
+    for name in ("webhook_mode", "capture_outcome", "checkout_outcome"):
         if getattr(data, name) is not None:
             config[name] = getattr(data, name)
     if data.faults is not None:
@@ -678,7 +722,17 @@ async def noon_simulate(order_id: str, data: Transition, background: BackgroundT
             if order["_configuration"].get("paymentAction") == "AUTHORIZE"
             else "CAPTURED"
         )
-        status = desired if data.outcome == "success" else data.outcome.upper()
+        outcome = data.outcome
+        if outcome == "success":
+            outcome = order["_controls"].get("checkout_outcome", "success")
+        decline = BANK_DECLINES.get(outcome)
+        status = (
+            "FAILED"
+            if decline
+            else desired
+            if outcome == "success"
+            else outcome.upper()
+        )
         if (
             status in {"CANCELLED", "EXPIRED"}
             and order["status"] not in CANCELLABLE
@@ -688,7 +742,26 @@ async def noon_simulate(order_id: str, data: Transition, background: BackgroundT
                 409,
                 "Only unpaid pre-authorization checkout can be cancelled or expired",
             )
-        return transition(order, status, force=data.force)
+        event = transition(order, status, force=data.force)
+        if event and decline:
+            order["errorCode"], order["errorMessage"] = decline
+            order["_payment_details"] = copy.deepcopy(BANK_DECLINE_CARDS[outcome])
+            order.setdefault("_transactions", []).append(
+                {
+                    "id": uuid4().hex,
+                    "type": order["_configuration"].get("paymentAction", "SALE"),
+                    "amount": order["amount"],
+                    "currency": order["currency"],
+                    "status": "FAILURE",
+                    "creationTime": now(),
+                    "errorCode": order["errorCode"],
+                    "errorMessage": order["errorMessage"],
+                }
+            )
+        elif event and "errorCode" in order:
+            order["errorCode"] = 0
+            order.pop("errorMessage", None)
+        return event
 
     result = storage.mutate(order_id, change)
     if not result:

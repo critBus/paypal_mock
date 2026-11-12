@@ -260,3 +260,12 @@ original-event replay. Includes authorization/capture, cancellation/expiry, pend
 responses, field corruption, missing checkout, duplicate/suppressed/invalid-JWS callbacks and delayed responses.
 See [the Noon guide](noon/README.md) for the HTTP-only local setup and exact control payloads. It does not change
 PayPal/VirtualPOS controls or reproduce unsupported real Noon refund/reversal flows.
+
+## Noon banking rejections
+
+Use [the Noon controls](http://localhost:7000/mock-noon) or the hosted checkout outcome selector to simulate
+`security_violation` (63), `suspect_fraud` (59) and `closed_account` (46). These are failed payments, not failed API lookups: INITIATE returns
+INITIATED and subsequent GETs return HTTP 200/resultCode 0 with FAILED order evidence and FAILURE transaction details.
+`result.paymentDetails` also returns a synthetic masked card, brand and issuing bank: Visa for code 59, Mastercard
+for code 46. The dashboard displays the same details. The standard signed webhook triggers reconciliation in
+CrinnoPayments. Isolated, callback-free examples are documented in the Noon guide. See [Noon setup and reporting checks](noon/README.md#banking-rejection-reports).

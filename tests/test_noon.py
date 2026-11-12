@@ -492,3 +492,83 @@ def test_zero_two_and_three_decimal_currencies(client, currency, amount, status)
         create(client, order={"currency": currency, "amount": amount}).status_code
         == status
     )
+
+
+@pytest.mark.parametrize(
+    "scenario,code,message",
+    [
+        ("security_violation", 63, "Security violation (Banking Error Code: 63)."),
+        ("suspect_fraud", 59, "Suspect fraud (Banking Error Code: 59)."),
+        ("closed_account", 46, "Closed account (Banking Error Code: 46)."),
+    ],
+)
+@pytest.mark.parametrize("manual", [False, True])
+def test_bank_decline_matches_successful_lookup_of_failed_payment(
+    client, scenario, code, message, manual
+):
+    controls(client, scenario)
+    remote = order(client, manual=manual)
+    assert remote["status"] == "INITIATED"
+    assert "paymentDetails" not in get(client, remote).json()["result"]
+    assert not client.outgoing
+    response = simulate(client, remote)
+    assert response.status_code == 200
+    assert response.json()["order"]["status"] == "FAILED"
+    result = get(client, remote).json()
+    assert result["resultCode"] == 0
+    assert result["result"]["order"]["errorCode"] == code
+    assert result["result"]["order"]["errorMessage"] == message
+    assert result["result"]["order"]["totalCapturedAmount"] == "0"
+    transaction = result["result"]["transactions"][0]
+    assert transaction["status"] == "FAILURE"
+    assert transaction["errorMessage"] == message
+    assert transaction["errorCode"] == code
+    expected_card = {
+        "brand": "MASTERCARD" if scenario == "closed_account" else "VISA",
+        "paymentInfo": "555555xxxxxx4444"
+        if scenario == "closed_account"
+        else "411111xxxxxx1111",
+        "cardIssuerName": "MOCK MASTERCARD BANK"
+        if scenario == "closed_account"
+        else "MOCK VISA BANK",
+    }
+    assert result["result"]["paymentDetails"] == expected_card
+    by_reference = client.get(
+        f"/payment/v1/order/getbyreference/{remote['reference']}"
+    ).json()
+    assert by_reference["result"]["paymentDetails"] == expected_card
+    assert (
+        NoonStorage(noon.storage.path).get(remote["id"])["_payment_details"]
+        == expected_card
+    )
+    listed = next(
+        item
+        for item in client.get("/mock-noon/orders").json()
+        if item["id"] == str(remote["id"])
+    )
+    assert listed["payment_details"] == expected_card
+    assert transaction["type"] == ("AUTHORIZE" if manual else "SALE")
+    assert transaction["amount"] == remote["amount"]
+    _, _, event = decode_delivery(client.outgoing[0])
+    assert event["orderStatus"] == "FAILED"
+    assert event["eventType"] == "Fail"
+    assert simulate(client, remote).status_code == 200
+    assert len(client.outgoing) == 1
+    assert len(get(client, remote).json()["result"]["transactions"]) == 1
+
+
+@pytest.mark.parametrize(
+    "outcome", ["security_violation", "suspect_fraud", "closed_account"]
+)
+def test_explicit_bank_decline_is_durable_and_does_not_change_other_orders(
+    client, outcome
+):
+    remote = order(client)
+    unaffected = order(client)
+    assert simulate(client, remote, outcome).status_code == 200
+    persisted = NoonStorage(noon.storage.path).get(remote["id"])
+    assert persisted["status"] == "FAILED"
+    assert persisted["errorMessage"]
+    assert simulate(client, unaffected).json()["order"]["status"] == "CAPTURED"
+    assert "errorMessage" not in get(client, unaffected).json()["result"]["order"]
+    assert "paymentDetails" not in get(client, unaffected).json()["result"]
